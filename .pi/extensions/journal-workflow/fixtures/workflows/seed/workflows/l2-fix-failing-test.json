@@ -1,0 +1,28 @@
+{
+	"id": "l2-fix-failing-test",
+	"intent": "修复一个失败的测试：复现失败、定位代码、修改、重跑验证",
+	"excludes": ["登录页面 UI", "样式"],
+	"steps": [
+		{
+			"intent": "运行相关测试复现失败",
+			"action": { "tool": "bash", "argsTemplate": "运行涉及的测试（命令可从任务描述或项目脚本推断）" },
+			"expect": "得到明确的失败信息（断言差异或堆栈）",
+			"retries": 2
+		},
+		{
+			"intent": "定位涉及的符号与实现",
+			"ref": "l1-locate-symbol"
+		},
+		{
+			"intent": "修改代码完成修复",
+			"action": { "tool": "edit", "argsTemplate": "按定位结果修改对应实现" }
+		},
+		{
+			"intent": "重跑测试验证修复",
+			"action": { "tool": "bash", "argsTemplate": "重跑同一测试" },
+			"expect": "测试通过；或给出新的明确失败（进入下一轮修复）",
+			"retries": 2,
+			"alternative": "l1-locate-symbol"
+		}
+	]
+}

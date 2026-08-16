@@ -1,0 +1,56 @@
+{
+	"ctx": {
+		"cwd": "G:/try/agent/demo",
+		"taskId": "task-demo-001",
+		"entries": []
+	},
+	"events": [
+		{ "event": "session_start" },
+		{
+			"event": "message_end",
+			"payload": { "message": { "role": "user", "content": "修复登录崩溃：运行 npm test 报错" } }
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "tc1", "toolName": "bash", "args": { "command": "npm test" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "tc1",
+				"result": { "content": [{ "type": "text", "text": "1 failing\nAuthLogin > crashes on empty password" }] },
+				"isError": true
+			}
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "tc2", "toolName": "grep", "args": { "pattern": "login", "path": "src" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "tc2",
+				"result": { "content": [{ "type": "text", "text": "src/auth/login.ts:42" }] },
+				"isError": false
+			}
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "tc3", "toolName": "read", "args": { "path": "src/auth/login.ts" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "tc3",
+				"result": { "content": [{ "type": "text", "text": "export function login(u, p) { if (!p) throw ..." }] },
+				"isError": false
+			}
+		},
+		{
+			"event": "turn_end",
+			"payload": { "message": { "role": "assistant", "stopReason": "stop" } }
+		},
+		{ "event": "agent_settled" },
+		{ "event": "session_shutdown" }
+	]
+}

@@ -1,0 +1,35 @@
+{
+	"intent": "修复登录测试失败",
+	"taskEssence": "缺陷复现 + 定位 + 修复 + 回归验证",
+	"deliverable": "通过测试的登录代码修复",
+	"relation": "new",
+	"plan": "跑全量测试复现 → grep 定位登录代码 → 读取实现确认原因",
+	"toolPatches": [
+		{
+			"refSequence": 1,
+			"intent": "复现失败，拿到准确的报错信息",
+			"argsSummary": "运行全量测试套件",
+			"resultSummary": "1 个测试失败：AuthLogin 在空密码时崩溃",
+			"significance": "essential",
+			"followUp": "随后 grep 定位 login 相关代码"
+		},
+		{
+			"refSequence": 2,
+			"intent": "定位崩溃涉及的源码位置",
+			"argsSummary": "在 src 下搜索 login",
+			"resultSummary": "命中 src/auth/login.ts:42",
+			"significance": "essential",
+			"followUp": null
+		},
+		{
+			"refSequence": 3,
+			"intent": "读取实现确认根因",
+			"argsSummary": "读取 login.ts 实现",
+			"resultSummary": "读到函数体，发现空密码未做校验直接抛错",
+			"significance": "essential",
+			"followUp": null
+		}
+	],
+	"unfinished": [],
+	"errorSummary": "首次跑测试失败（空密码崩溃），已定位到 src/auth/login.ts"
+}

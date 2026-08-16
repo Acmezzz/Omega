@@ -1,0 +1,83 @@
+{
+	"ctx": {
+		"cwd": "G:/try/agent/demo",
+		"taskId": "task-demo-002",
+		"entries": []
+	},
+	"events": [
+		{ "event": "session_start" },
+		{
+			"event": "message_end",
+			"payload": { "message": { "role": "user", "content": "修复登录崩溃" } }
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "t1", "toolName": "bash", "args": { "command": "npm test" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "t1",
+				"result": { "content": [{ "type": "text", "text": "AuthLogin crashes" }] },
+				"isError": true
+			}
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "t2", "toolName": "grep", "args": { "pattern": "login" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "t2",
+				"result": { "content": [{ "type": "text", "text": "src/auth/login.ts:42" }] },
+				"isError": false
+			}
+		},
+		{ "event": "turn_end", "payload": { "message": { "role": "assistant", "stopReason": "stop" } } },
+		{ "event": "agent_settled" },
+		{
+			"event": "message_end",
+			"payload": { "message": { "role": "user", "content": "还是崩，看下堆栈，可能上次的修复没生效" } }
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "t3", "toolName": "bash", "args": { "command": "npm test -- auth" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "t3",
+				"result": { "content": [{ "type": "text", "text": "TypeError: Cannot read undefined\nat login (src/auth/login.ts:42)" }] },
+				"isError": true
+			}
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "t4", "toolName": "edit", "args": { "path": "src/auth/login.ts" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "t4",
+				"result": { "content": [{ "type": "text", "text": "ok" }] },
+				"isError": false
+			}
+		},
+		{
+			"event": "tool_execution_start",
+			"payload": { "toolCallId": "t5", "toolName": "bash", "args": { "command": "npm test" } }
+		},
+		{
+			"event": "tool_execution_end",
+			"payload": {
+				"toolCallId": "t5",
+				"result": { "content": [{ "type": "text", "text": "all passing" }] },
+				"isError": false
+			}
+		},
+		{ "event": "turn_end", "payload": { "message": { "role": "assistant", "stopReason": "stop" } } },
+		{ "event": "agent_settled" },
+		{ "event": "session_shutdown" }
+	]
+}

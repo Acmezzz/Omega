@@ -1,0 +1,10 @@
+{
+	"id": "l1-locate-symbol",
+	"intent": "定位一个符号/函数的定义、实现与调用点",
+	"calls": [
+		{ "tool": "grep", "argsTemplate": "pattern={symbol}（在相关目录内搜索定义与调用）" },
+		{ "tool": "read", "argsTemplate": "path={path}（读取 grep 命中的实现文件）" }
+	],
+	"expect": "grep 返回非空匹配；read 读到函数体而非仅签名",
+	"variants": []
+}
