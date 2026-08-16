@@ -1,0 +1,13 @@
+{
+	"compilerOptions": {
+		"noEmit": true,
+		"strict": true,
+		"module": "nodenext",
+		"moduleResolution": "nodenext",
+		"target": "es2022",
+		"skipLibCheck": true,
+		"allowImportingTsExtensions": true,
+		"types": ["node"]
+	},
+	"include": ["index.ts", "adapter.ts", "commands.ts", "config.ts", "core/**/*.ts", "test/**/*.ts"]
+}

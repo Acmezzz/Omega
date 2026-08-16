@@ -13,6 +13,7 @@ export interface JournalWorkflowConfig {
 	workflowsRoot: string;
 	/** Optional dedicated aux model ("provider/model"); default: session model. */
 	auxModel?: string;
+	workflowPolicy?: "workflow-first" | "off";
 }
 
 interface SettingsFile {
@@ -20,7 +21,9 @@ interface SettingsFile {
 		enabled?: boolean;
 		journalsRoot?: string;
 		workflowsRoot?: string;
-		auxModel?: string;
+			auxModel?: string;
+			workflowPolicy?: "workflow-first" | "off";
+
 	};
 }
 
@@ -32,7 +35,9 @@ export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflo
 	const defaults: JournalWorkflowConfig = {
 		enabled: true,
 		journalsRoot: join(agentDir, "journals"),
-		workflowsRoot: join(agentDir, "workflows"),
+			workflowsRoot: join(agentDir, "workflows"),
+			workflowPolicy: "workflow-first",
+
 	};
 	const settingsPath = join(agentDir, "settings.json");
 	if (!existsSync(settingsPath)) return envOverrides(defaults);
@@ -43,8 +48,10 @@ export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflo
 			...defaults,
 			enabled: section.enabled ?? defaults.enabled,
 			journalsRoot: section.journalsRoot ?? defaults.journalsRoot,
-			workflowsRoot: section.workflowsRoot ?? defaults.workflowsRoot,
-			auxModel: section.auxModel ?? defaults.auxModel,
+		workflowsRoot: section.workflowsRoot ?? defaults.workflowsRoot,
+				auxModel: section.auxModel ?? defaults.auxModel,
+				workflowPolicy: section.workflowPolicy ?? defaults.workflowPolicy,
+
 		});
 	} catch {
 		return envOverrides(defaults);

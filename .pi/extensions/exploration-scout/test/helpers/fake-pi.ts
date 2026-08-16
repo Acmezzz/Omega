@@ -12,6 +12,7 @@ export class FakePi {
 	handlers = new Map<string, Array<(event: never, ctx: never) => unknown>>();
 	sentMessages: SentMessage[] = [];
 	commands: Array<{ name: string; options: unknown }> = [];
+	tools: unknown[] = [];
 
 	on(event: string, handler: (event: never, ctx: never) => unknown): void {
 		const list = this.handlers.get(event) ?? [];
@@ -27,6 +28,9 @@ export class FakePi {
 		this.commands.push({ name, options });
 	}
 
+	registerTool(tool: unknown): void {
+		this.tools.push(tool);
+	}
 
 	async emit(event: string, payload: unknown, ctx: unknown): Promise<unknown[]> {
 		const results: unknown[] = [];

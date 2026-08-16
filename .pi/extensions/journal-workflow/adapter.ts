@@ -200,7 +200,7 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		if (!w || !event.message) return;
 		if (event.message.role === "user") {
 			lastUserMessage = event.message;
-			w.handleEvent({ kind: "message_end_user", text: userTextOf(event.message.content) });
+				w.handleEvent({ kind: "message_end_user", text: userTextOf(event.message.content) });
 		} else if (event.message.role === "assistant") {
 			lastAssistantMessage = event.message;
 			const content = (event.message as { content?: unknown }).content;
@@ -221,22 +221,27 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		deps.afterEvent?.("tool_execution_start");
 	});
 
+	const activateWorkflow = (workflowId: string): string | null => {
+		const entry = getStore().getEntry(workflowId);
+		if (!entry || entry.status !== "active") return null;
+		activeEntry = entry;
+		getStore().bumpUsage(entry.id);
+		const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
+		const l2 = getStore().getL2(entry.id);
+		tracker = l2 ? new EngineTracker(l2.id, l2.steps, { getL1: (id) => getStore().getL1(id) }) : null;
+		writer?.setActiveWorkflow(entry.id);
+		return guidance || null;
+	};
+
 	pi.on("before_agent_start", async (event: { prompt: string; systemPrompt: string }, ctxRaw: unknown) => {
 		currentCtx = ctxRaw as HandlerCtx;
-		// Match → inject guidance → arm the tracker (L2 only; L1 injects without checkpoints).
 		tracker = null;
 		activeEntry = null;
+		if ((deps.config.workflowPolicy ?? "workflow-first") === "off") return undefined;
 		try {
 			const entry = await matchWorkflow(event.prompt, getStore().getRegistry(), llm, matchCache);
 			if (!entry) return undefined;
-			activeEntry = entry;
-			getStore().bumpUsage(entry.id);
-			const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
-			const l2 = getStore().getL2(entry.id);
-			if (l2) {
-				tracker = new EngineTracker(l2.id, l2.steps, { getL1: (id) => getStore().getL1(id) });
-			}
-			writer?.setActiveWorkflow(entry.id);
+			const guidance = activateWorkflow(entry.id);
 			if (!guidance) return undefined;
 			return { systemPrompt: `${event.systemPrompt}\n\n<workflow_guidance>\n${guidance}\n</workflow_guidance>` };
 		} catch {
