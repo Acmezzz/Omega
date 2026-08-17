@@ -7,32 +7,49 @@
 /** Simulated event stream — the adapter translates Pi extension events into these. */
 export type SimEvent =
 	| { kind: "session_start"; taskId: string; projectKey: string }
-	| { kind: "message_end_user"; text: string; messageRef?: unknown }
-	| { kind: "tool_start"; toolCallId: string; tool: string; args: unknown }
-	| { kind: "tool_end"; toolCallId: string; resultContent: string; isError: boolean; reasoning?: string }
-	| { kind: "turn_end"; stopReason: string; assistantText?: string }
+	| { kind: "message_end_user"; text: string; messageRef?: unknown; fragmentIds?: string[] }
+	| { kind: "tool_start"; toolCallId: string; tool: string; args: unknown; argsFragmentIds?: string[] }
+	| { kind: "tool_end"; toolCallId: string; resultContent: string; isError: boolean; reasoning?: string; resultFragmentIds?: string[]; reasoningFragmentIds?: string[] }
+	| { kind: "turn_end"; stopReason: string; assistantText?: string; assistantFragmentIds?: string[] }
 	| { kind: "agent_settled" }
 	| { kind: "session_shutdown" };
 
 export type TurnOutcome = "completed" | "partial" | "aborted" | "failed";
 export type TurnRelation = "new" | "retry" | "fix_success" | "fix_failed" | "clarify";
 
+export interface TruncationMeta {
+	originalChars: number;
+	storedChars: number;
+	omittedChars: number;
+	headChars: number;
+	tailChars: number;
+	strategy: "head-tail";
+	fragmentIds?: string[];
+}
+
 export interface ToolCallRecord {
 	tool: string; argsRaw: string; argsSummary: string | null; intent: string | null; reasoningRaw: string | null;
 	status: "success" | "error" | "timeout" | "cancelled"; resultRaw: string | null; resultSummary: string | null;
 	significance: "essential" | "helpful" | "neutral" | "wasted" | null; followUp: string | null;
 	workflowRef: string | null; refSequence: number;
+	argsTruncation?: TruncationMeta;
+	resultTruncation?: TruncationMeta;
+	reasoningTruncation?: TruncationMeta;
 }
 export interface SkillUsage { name: string; result: string | null }
 export interface TurnRecord {
 	seq: number; userEntryId: string | null; assistantEntryId: string | null; userInput: string; assistantTextRaw: string | null;
+	userInputTruncation?: TruncationMeta;
 	intent: string | null; taskEssence: string | null; deliverable: string | null; relation: TurnRelation | null; plan: string | null;
 	toolCalls: ToolCallRecord[]; skills: SkillUsage[]; outcome: TurnOutcome; unfinished: string[]; errorSummary: string | null; extractedAt?: string;
+	assistantTextTruncation?: TruncationMeta;
+	sourceFragments?: string[];
 }
 export interface TurnPatch {
 	intent: string | null; taskEssence: string | null; deliverable: string | null; relation: TurnRelation | null; plan: string | null;
 	toolPatches: Array<{ refSequence: number; intent: string | null; argsSummary: string | null; resultSummary: string | null; significance: ToolCallRecord["significance"]; followUp: string | null }>;
 	unfinished: string[]; errorSummary: string | null;
+	sourceFragments?: string[];
 }
 export type JournalLine = { kind: "turn"; seq: number; turn: TurnRecord } | { kind: "patch"; seq: number; patch: TurnPatch; extractedAt: string };
 export interface TaskBlockIndex { file: string; fromSeq: number; toSeq: number }

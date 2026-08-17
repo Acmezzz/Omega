@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { JournalWriter, listTasks, readTask } from "../journal/writer.ts";
+import { BackupReader } from "../journal/backup.ts";
 import { distillTurn } from "../journal/distill.ts";
 import type { TurnRecord } from "../journal/types.ts";
 import type { LlmClient } from "../llm.ts";
@@ -53,6 +54,11 @@ export interface ExtractOptions {
 	minCoOccurrence?: number;
 	/** Skip library writes; report what would happen (LLM calls still run). */
 	dryRun?: boolean;
+	backupsRoot?: string;
+	backupEnabled?: boolean;
+	allowSensitiveFragments?: boolean;
+	maxFragmentCharsPerRequest?: number;
+	maxFragmentsPerRequest?: number;
 }
 
 interface LoadedTask {
@@ -154,9 +160,22 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 		for (const task of tasks) {
 			const pending = task.turns.filter((t) => t.extractedAt === undefined);
 			if (pending.length === 0) continue;
-			const writer = new JournalWriter(opts.journalsRoot, opts.projectKey, task.taskId);
-			for (const turn of pending) {
-				const patch = await distillTurn(turn, null, opts.llm);
+				const writer = new JournalWriter(opts.journalsRoot, opts.projectKey, task.taskId);
+				const backupDir = opts.backupEnabled === false ? null : join(opts.backupsRoot ?? join(opts.journalsRoot, ".backups"), opts.projectKey, task.taskId);
+				const backupReader = backupDir ? new BackupReader(backupDir, { allowSensitive: opts.allowSensitiveFragments }) : null;
+				for (const turn of pending) {
+					const availableFragments = backupReader?.listFragments()
+						.filter((fragment) => fragment.turnSeq === turn.seq)
+						.filter((fragment) => opts.allowSensitiveFragments || fragment.sensitivity !== "restricted")
+						.map(({ fragmentId, field, side, originalChars, sensitivity }) => ({ fragmentId, field, side, originalChars, sensitivity }));
+					const patch = await distillTurn(turn, null, opts.llm, {
+						availableFragments,
+						readFragments: (request) => backupReader?.getFragments(request) ?? [],
+						allowSensitiveFragments: opts.allowSensitiveFragments,
+						maxFragmentChars: opts.maxFragmentCharsPerRequest,
+						maxFragments: opts.maxFragmentsPerRequest,
+					});
+
 				if (patch) {
 					writer.appendPatch(turn.seq, patch);
 					turn.intent = patch.intent;

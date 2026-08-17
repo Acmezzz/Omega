@@ -7,9 +7,11 @@
  * fake-pi harness, so event replay tests exercise the identical wiring code.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
 import type { LlmClient } from "./core/llm.ts";
 import { textFromContent } from "./core/llm.ts";
 import { JournalWriter } from "./core/journal/writer.ts";
+import { BackupWriter, type BackupAppendResult } from "./core/journal/backup.ts";
 import { projectKeyFromCwd } from "./core/journal/types.ts";
 import { resolveEntryIds, type EntryLike } from "./core/journal/refs.ts";
 import { distillTurn, type PrevTurnContext } from "./core/journal/distill.ts";
@@ -35,6 +37,8 @@ export interface HandlerCtx {
 	cwd: string;
 	sessionManager?: {
 		getHeader?: () => { id: string };
+		getSessionFile?: () => string | undefined;
+		getSessionDir?: () => string;
 		getEntries?: () => Array<{ id: string; message?: unknown; type: string }>;
 	};
 	model?: unknown;
@@ -45,6 +49,15 @@ export interface HandlerCtx {
 			options?: { maxTokens?: number },
 		) => Promise<{ content: unknown }>;
 	};
+}
+
+function safeEventText(value: unknown): string {
+	if (typeof value === "string") return value;
+	try {
+		return JSON.stringify(value) ?? String(value ?? "");
+	} catch {
+		return String(value ?? "");
+	}
 }
 
 export function userTextOf(content: unknown): string {
@@ -126,15 +139,21 @@ export interface WiredRuntime {
 	/** In-flight fire-and-forget engine validations (tests await these). */
 	getPendingChecks(): Array<Promise<void>>;
 	/** Active workflow entry id, when the engine is guiding this turn. */
-	getActiveWorkflowId(): string | null;
+		getActiveWorkflowId(): string | null;
+		getBackupDir(): string | null;
+
 }
 
 export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
-	let writer: JournalWriter | null = null;
-	let currentCtx: HandlerCtx | undefined;
+		let writer: JournalWriter | null = null;
+		let backup: BackupWriter | null = null;
+		let currentCtx: HandlerCtx | undefined;
+
 	let lastUserMessage: unknown = null;
-	let lastAssistantMessage: unknown = null;
-	let lastAssistantText: string | null = null;
+		let lastAssistantMessage: unknown = null;
+		let lastAssistantText: string | null = null;
+		let lastAssistantFragmentIds: string[] | undefined;
+
 	/** Per-tool-call reasoning segments extracted from assistant messages. */
 	const reasoningById = new Map<string, string>();
 	let prevContext: PrevTurnContext | null = null;
@@ -179,45 +198,90 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		}
 	};
 
-	const ensureWriter = (ctx: HandlerCtx): JournalWriter | null => {
-		if (writer) return writer;
-		const header = ctx.sessionManager?.getHeader?.();
-		if (!header?.id) return null;
-		const key = projectKeyFromCwd(ctx.cwd);
-		writer = new JournalWriter(deps.config.journalsRoot, key, header.id);
-		return writer;
-	};
+		const ensureWriter = (ctx: HandlerCtx): JournalWriter | null => {
+			const header = ctx.sessionManager?.getHeader?.();
+			if (!header?.id) return null;
+			const key = projectKeyFromCwd(ctx.cwd);
+			if (writer && writer.taskId === header.id && writer.projectKey === key) return writer;
+				writer?.handleEvent({ kind: "session_shutdown" });
+				backup = null;
+				writer = new JournalWriter(deps.config.journalsRoot, key, header.id);
 
-	pi.on("session_start", (_event: unknown, ctxRaw: unknown) => {
-		currentCtx = ctxRaw as HandlerCtx;
-		ensureWriter(currentCtx);
+			if (deps.config.backupEnabled !== false) {
+				backup = new BackupWriter(deps.config.backupsRoot ?? join(deps.config.journalsRoot, ".backups"), key, header.id, header.id, {
+					fragmentSize: deps.config.fragmentSize,
+					fragmentOverlap: deps.config.fragmentOverlap,
+				});
+			} else {
+				backup = null;
+			}
+			return writer;
+			};
+
+		const appendBackup = (
+			eventType: string,
+			payload: unknown,
+			options: Parameters<BackupWriter["appendEvent"]>[2] = {},
+		): BackupAppendResult | undefined => {
+			try {
+				return backup?.appendEvent(eventType, payload, options);
+			} catch {
+				return undefined;
+			}
+		};
+
+		pi.on("session_start", (event: { reason?: string; previousSessionFile?: string }, ctxRaw: unknown) => {
+
+			currentCtx = ctxRaw as HandlerCtx;
+			const w = ensureWriter(currentCtx);
+			appendBackup("session_start", { reason: event.reason ?? "startup", previousSessionFile: event.previousSessionFile, sessionFile: currentCtx.sessionManager?.getSessionFile?.() });
+			void w;
+
 		deps.afterEvent?.("session_start");
 	});
 
-	pi.on("message_end", (event: { message?: { role?: string; content?: unknown } }, ctxRaw: unknown) => {
-		currentCtx = ctxRaw as HandlerCtx;
-		const w = ensureWriter(currentCtx);
-		if (!w || !event.message) return;
-		if (event.message.role === "user") {
-			lastUserMessage = event.message;
-				w.handleEvent({ kind: "message_end_user", text: userTextOf(event.message.content) });
+		pi.on("message_end", (event: { message?: { role?: string; content?: unknown } }, ctxRaw: unknown) => {
+			currentCtx = ctxRaw as HandlerCtx;
+			const w = ensureWriter(currentCtx);
+			if (!w || !event.message) return;
+			if (event.message.role === "user") {
+				lastUserMessage = event.message;
+				const text = userTextOf(event.message.content);
+				const raw = appendBackup("user_message", event.message, { turnSeq: w.nextTurnSeq, texts: text ? [{ field: "userInput", text }] : [] });
+				w.handleEvent({ kind: "message_end_user", text, fragmentIds: raw?.fragmentIds.userInput });
+			} else if (event.message.role === "toolResult") {
+			appendBackup("tool_result_message", event.message, { turnSeq: w.currentTurnSeq, toolCallId: typeof (event.message as { toolCallId?: unknown }).toolCallId === "string" ? (event.message as { toolCallId: string }).toolCallId : null });
 		} else if (event.message.role === "assistant") {
-			lastAssistantMessage = event.message;
-			const content = (event.message as { content?: unknown }).content;
-			// Split interleaved CoT into per-tool-call reasoning; capture prose reply.
-			const segments = reasoningByToolCall(content);
-			for (const [id, text] of segments) {
-				if (text) reasoningById.set(id, text);
+				const content = event.message.content;
+				const prose = userTextOf(content);
+				const thinking = thinkingTextOf(content);
+				const raw = appendBackup("assistant_message", event.message, { turnSeq: w.currentTurnSeq,
+					texts: [
+						...(prose ? [{ field: "assistantText" as const, text: prose }] : []),
+						...(thinking ? [{ field: "assistantThinking" as const, text: thinking, sensitivity: "restricted" as const }] : []),
+					],
+				});
+				lastAssistantMessage = event.message;
+				lastAssistantFragmentIds = raw?.fragmentIds.assistantText;
+				const segments = reasoningByToolCall(content);
+				for (const [id, text] of segments) {
+					if (text) reasoningById.set(id, text);
+				}
+				if (prose) lastAssistantText = prose;
 			}
-			const prose = userTextOf(content);
-			if (prose) lastAssistantText = prose;
-		}
-		deps.afterEvent?.("message_end");
-	});
+			deps.afterEvent?.("message_end");
+		});
 
-	pi.on("tool_execution_start", (event: { toolCallId: string; toolName: string; args: unknown }, ctxRaw: unknown) => {
-		currentCtx = ctxRaw as HandlerCtx;
-		writer?.handleEvent({ kind: "tool_start", toolCallId: event.toolCallId, tool: event.toolName, args: event.args });
+
+		pi.on("tool_execution_start", (event: { toolCallId: string; toolName: string; args: unknown }, ctxRaw: unknown) => {
+			currentCtx = ctxRaw as HandlerCtx;
+			const raw = appendBackup("tool_execution_start", event, {
+				turnSeq: writer?.currentTurnSeq,
+				toolCallId: event.toolCallId,
+				texts: [{ field: "tool.args", text: safeEventText(event.args) }],
+			});
+			writer?.handleEvent({ kind: "tool_start", toolCallId: event.toolCallId, tool: event.toolName, args: event.args, argsFragmentIds: raw?.fragmentIds["tool.args"] });
+
 		deps.afterEvent?.("tool_execution_start");
 	});
 
@@ -249,17 +313,37 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		}
 	});
 
-	pi.on("tool_execution_end", (event: { toolCallId: string; toolName: string; result: { content?: unknown } | undefined; isError: boolean }, ctxRaw: unknown) => {
-		currentCtx = ctxRaw as HandlerCtx;
-		const w = writer;
-		if (!w) return;
-		const resultText = textFromContent(event.result?.content) ?? "";
-		w.handleEvent({
+		pi.on("tool_execution_update", (event: { toolCallId: string; toolName: string; args: unknown; partialResult: unknown }, ctxRaw: unknown) => {
+			currentCtx = ctxRaw as HandlerCtx;
+			if (deps.config.captureToolUpdates) appendBackup("tool_execution_update", event, { turnSeq: writer?.currentTurnSeq, toolCallId: event.toolCallId });
+			deps.afterEvent?.("tool_execution_update");
+		});
+
+		pi.on("tool_execution_end", (event: { toolCallId: string; toolName: string; result: unknown; isError: boolean }, ctxRaw: unknown) => {
+			currentCtx = ctxRaw as HandlerCtx;
+			const w = writer;
+			if (!w) return;
+			const resultContent = (event.result as { content?: unknown } | undefined)?.content;
+			const resultText = textFromContent(resultContent) ?? safeEventText(event.result);
+			const reasoning = reasoningById.get(event.toolCallId);
+			const raw = appendBackup("tool_execution_end", event, {
+				turnSeq: writer?.currentTurnSeq,
+				toolCallId: event.toolCallId,
+				texts: [
+					{ field: "tool.result", text: resultText },
+					...(reasoning ? [{ field: "tool.reasoning" as const, text: reasoning, sensitivity: "restricted" as const }] : []),
+				],
+			});
+			w.handleEvent({
+
 			kind: "tool_end",
 			toolCallId: event.toolCallId,
-			resultContent: textFromContent(event.result?.content) ?? "",
-			isError: event.isError,
-			reasoning: reasoningById.get(event.toolCallId),
+				resultContent: resultText,
+				isError: event.isError,
+				reasoning,
+				resultFragmentIds: raw?.fragmentIds["tool.result"],
+				reasoningFragmentIds: raw?.fragmentIds["tool.reasoning"],
+
 		});
 		// Engine checkpoint validation for the current step, fire-and-forget.
 		const t = tracker;
@@ -279,15 +363,19 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		deps.afterEvent?.("tool_execution_end");
 	});
 
-	pi.on("turn_end", (event: { message?: { role?: string; stopReason?: string } }, ctxRaw: unknown) => {
+		pi.on("turn_end", (event: { message?: { role?: string; stopReason?: string }; toolResults?: unknown[] }, ctxRaw: unknown) => {
+
 		currentCtx = ctxRaw as HandlerCtx;
 		const w = writer;
 		if (!w) return;
-		w.handleEvent({
-			kind: "turn_end",
-			stopReason: event.message?.stopReason ?? "stop",
-			assistantText: lastAssistantText ?? undefined,
-		});
+			appendBackup("turn_end", event, { turnSeq: w.currentTurnSeq });
+			w.handleEvent({
+				kind: "turn_end",
+				stopReason: event.message?.stopReason ?? "stop",
+				assistantText: lastAssistantText ?? undefined,
+				assistantFragmentIds: lastAssistantFragmentIds,
+			});
+
 		// refId resolution by object identity against the entry tail.
 		try {
 			const entries = (currentCtx.sessionManager?.getEntries?.() ?? []).slice(-40) as EntryLike[];
@@ -298,8 +386,10 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		}
 		lastUserMessage = null;
 		lastAssistantMessage = null;
-		lastAssistantText = null;
-		reasoningById.clear();
+			lastAssistantText = null;
+			lastAssistantFragmentIds = undefined;
+			reasoningById.clear();
+
 		deps.afterEvent?.("turn_end");
 	});
 
@@ -320,8 +410,21 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		// Fire-and-forget distillation of the just-flushed fact turn.
 		const flushed = w.flushedTurn;
 		if (flushed) {
-			const prev = prevContext;
-			const tracked: Promise<void> = distillTurn(flushed, prev, llm)
+				const prev = prevContext;
+				const backupReader = backup?.reader({ allowSensitive: deps.config.allowSensitiveFragments });
+					const availableFragments = backupReader?.listFragments()
+						.filter((fragment) => fragment.turnSeq === flushed.seq)
+						.filter((fragment) => deps.config.allowSensitiveFragments || fragment.sensitivity !== "restricted")
+						.map(({ fragmentId, field, side, originalChars, sensitivity }) => ({ fragmentId, field, side, originalChars, sensitivity }));
+
+				const tracked: Promise<void> = distillTurn(flushed, prev, llm, {
+					availableFragments,
+					readFragments: (request) => backupReader?.getFragments(request) ?? [],
+					allowSensitiveFragments: deps.config.allowSensitiveFragments,
+					maxFragmentChars: deps.config.maxFragmentCharsPerRequest,
+					maxFragments: deps.config.maxFragmentsPerRequest,
+				})
+
 				.then((patch) => {
 					if (patch && writer === w) {
 						w.appendPatch(flushed.seq, patch);
@@ -337,9 +440,12 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		deps.afterEvent?.("agent_settled");
 	});
 
-	pi.on("session_shutdown", (_event: unknown, ctxRaw: unknown) => {
-		currentCtx = ctxRaw as HandlerCtx;
-		writer?.handleEvent({ kind: "session_shutdown" });
+		pi.on("session_shutdown", (event: { reason?: string; targetSessionFile?: string }, ctxRaw: unknown) => {
+			currentCtx = ctxRaw as HandlerCtx;
+			appendBackup("session_shutdown", { reason: event.reason ?? "quit", targetSessionFile: event.targetSessionFile });
+			writer?.handleEvent({ kind: "session_shutdown" });
+			backup = null;
+
 		deps.afterEvent?.("session_shutdown");
 	});
 
@@ -365,5 +471,6 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		getPendingDistills: () => [...pendingDistills],
 		getPendingChecks: () => [...pendingChecks],
 		getActiveWorkflowId: () => activeEntry?.id ?? null,
+		getBackupDir: () => backup?.dir ?? null,
 	};
 }

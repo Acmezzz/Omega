@@ -12,6 +12,7 @@ import {
 	type SimEvent,
 	type TaskMeta,
 	type ToolCallRecord,
+	type TruncationMeta,
 	type TurnOutcome,
 	type TurnPatch,
 	type TurnRecord,
@@ -25,9 +26,27 @@ const RAW_RESULT_LIMIT = 500;
 const RAW_TEXT_LIMIT = 2000;
 const RAW_REASONING_LIMIT = 800;
 
+export function truncateWithMeta(text: string, max: number): { text: string; meta?: TruncationMeta } {
+	const value = typeof text === "string" ? text : String(text ?? "");
+	if (value.length <= max) return { text: value };
+	const headChars = Math.ceil(max / 2);
+	const tailChars = Math.floor(max / 2);
+	const omittedChars = value.length - headChars - tailChars;
+	return {
+		text: `${value.slice(0, headChars)}…[truncated ${omittedChars} chars]…${value.slice(value.length - tailChars)}`,
+		meta: {
+			originalChars: value.length,
+			storedChars: headChars + tailChars,
+			omittedChars,
+			headChars,
+			tailChars,
+			strategy: "head-tail",
+		},
+	};
+}
+
 export function truncate(text: string, max: number): string {
-	if (text.length <= max) return text;
-	return `${text.slice(0, max)}…[truncated ${text.length - max} chars]`;
+	return truncateWithMeta(text, max).text;
 }
 
 export function taskDirOf(journalsRoot: string, projectKey: string, taskId: string): string {
@@ -87,8 +106,10 @@ export function applyPatch(turn: TurnRecord, patch: TurnPatch, extractedAt: stri
 	turn.relation = patch.relation;
 	turn.plan = patch.plan;
 	turn.unfinished = patch.unfinished ?? [];
-	turn.errorSummary = patch.errorSummary;
-	turn.extractedAt = extractedAt;
+		turn.errorSummary = patch.errorSummary;
+		turn.sourceFragments = patch.sourceFragments;
+		turn.extractedAt = extractedAt;
+
 	for (const tp of patch.toolPatches ?? []) {
 		const tc = turn.toolCalls.find((c) => c.refSequence === tp.refSequence);
 		if (tc) {
@@ -179,17 +200,18 @@ export class JournalWriter {
 		switch (ev.kind) {
 			case "session_start":
 				break;
-			case "message_end_user":
-				this.beginTurn(ev.text);
-				break;
-			case "tool_start":
-				this.onToolStart(ev.toolCallId, ev.tool, ev.args);
-				break;
-			case "tool_end":
-				this.onToolEnd(ev.toolCallId, ev.resultContent, ev.isError, ev.reasoning);
-				break;
-			case "turn_end":
-				this.onTurnEnd(ev.stopReason, ev.assistantText);
+				case "message_end_user":
+					this.beginTurn(ev.text, ev.fragmentIds);
+					break;
+				case "tool_start":
+					this.onToolStart(ev.toolCallId, ev.tool, ev.args, ev.argsFragmentIds);
+					break;
+				case "tool_end":
+					this.onToolEnd(ev.toolCallId, ev.resultContent, ev.isError, ev.reasoning, ev.resultFragmentIds, ev.reasoningFragmentIds);
+					break;
+				case "turn_end":
+					this.onTurnEnd(ev.stopReason, ev.assistantText, ev.assistantFragmentIds);
+
 				break;
 			case "agent_settled":
 				this.flushTurn();
@@ -229,14 +251,16 @@ export class JournalWriter {
 			.filter((x): x is Record<string, unknown> => x !== null);
 	}
 
-	private beginTurn(userInput: string): void {
+	private beginTurn(userInput: string, fragmentIds?: string[]): void {
 		if (this.currentTurn) this.flushTurn();
 		this.lastSeq += 1;
+		const bounded = truncateWithMeta(userInput, RAW_TEXT_LIMIT);
 		this.currentTurn = {
 			seq: this.lastSeq,
 			userEntryId: null,
 			assistantEntryId: null,
-			userInput,
+			userInput: bounded.text,
+			...(bounded.meta ? { userInputTruncation: { ...bounded.meta, fragmentIds } } : {}),
 			assistantTextRaw: null,
 			intent: null,
 			taskEssence: null,
@@ -252,11 +276,13 @@ export class JournalWriter {
 		this.pendingTools.clear();
 	}
 
-	private onToolStart(toolCallId: string, tool: string, args: unknown): void {
+	private onToolStart(toolCallId: string, tool: string, args: unknown, fragmentIds?: string[]): void {
 		if (!this.currentTurn) return;
-		const record: ToolCallRecord = {
-			tool,
-			argsRaw: truncate(safeStringify(args), RAW_ARGS_LIMIT),
+			const argsBounded = truncateWithMeta(safeStringify(args), RAW_ARGS_LIMIT);
+			const record: ToolCallRecord = {
+				tool,
+				argsRaw: argsBounded.text,
+
 			argsSummary: null,
 			intent: null,
 			reasoningRaw: null,
@@ -265,29 +291,37 @@ export class JournalWriter {
 			resultSummary: null,
 			significance: null,
 			followUp: null,
-			workflowRef: this._activeRef,
-			refSequence: this.currentTurn.toolCalls.length + 1,
+				workflowRef: this._activeRef,
+				refSequence: this.currentTurn.toolCalls.length + 1,
+				...(argsBounded.meta ? { argsTruncation: { ...argsBounded.meta, fragmentIds } } : {}),
+
 		};
 		this.currentTurn.toolCalls.push(record);
 		this.pendingTools.set(toolCallId, record);
 	}
 
-	private onToolEnd(toolCallId: string, resultContent: string, isError: boolean, reasoning?: string): void {
+	private onToolEnd(toolCallId: string, resultContent: string, isError: boolean, reasoning?: string, resultFragmentIds?: string[], reasoningFragmentIds?: string[]): void {
 		const record = this.pendingTools.get(toolCallId);
 		if (!record) return;
 		record.status = toolStatusFromError(isError);
-		record.resultRaw = truncate(resultContent, RAW_RESULT_LIMIT);
+		const resultBounded = truncateWithMeta(resultContent, RAW_RESULT_LIMIT);
+		record.resultRaw = resultBounded.text;
+		if (resultBounded.meta) record.resultTruncation = { ...resultBounded.meta, fragmentIds: resultFragmentIds };
 		if (reasoning && reasoning.trim().length > 0) {
-			record.reasoningRaw = truncate(reasoning, RAW_REASONING_LIMIT);
+			const reasoningBounded = truncateWithMeta(reasoning, RAW_REASONING_LIMIT);
+			record.reasoningRaw = reasoningBounded.text;
+			if (reasoningBounded.meta) record.reasoningTruncation = { ...reasoningBounded.meta, fragmentIds: reasoningFragmentIds };
 		}
 		this.pendingTools.delete(toolCallId);
 	}
 
-	private onTurnEnd(stopReason: string, assistantText?: string): void {
+	private onTurnEnd(stopReason: string, assistantText?: string, fragmentIds?: string[]): void {
 		if (!this.currentTurn) return;
 		this.currentTurn.outcome = stopReasonToOutcome(stopReason);
 		if (assistantText && assistantText.trim().length > 0) {
-			this.currentTurn.assistantTextRaw = truncate(assistantText, RAW_TEXT_LIMIT);
+			const assistantBounded = truncateWithMeta(assistantText, RAW_TEXT_LIMIT);
+			this.currentTurn.assistantTextRaw = assistantBounded.text;
+			if (assistantBounded.meta) this.currentTurn.assistantTextTruncation = { ...assistantBounded.meta, fragmentIds };
 		}
 	}
 
@@ -296,6 +330,14 @@ export class JournalWriter {
 	/** The most recently flushed fact turn (input for distillation). */
 	get flushedTurn(): TurnRecord | null {
 		return this.lastFlushedTurn;
+	}
+
+	get currentTurnSeq(): number | null {
+		return this.currentTurn?.seq ?? null;
+	}
+
+	get nextTurnSeq(): number {
+		return this.currentTurn?.seq ?? this.lastSeq + 1;
 	}
 
 	private flushTurn(): TurnRecord | null {

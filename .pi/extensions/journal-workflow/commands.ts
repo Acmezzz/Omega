@@ -30,10 +30,16 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 			const projectKey = deps.resolveProjectKey(ctx.cwd);
 			notify("wf-extract: 开始提取…");
 			const report = await runExtraction({
-				journalsRoot: deps.config.journalsRoot,
-				projectKey,
-				store,
-				llm: deps.llm,
+					journalsRoot: deps.config.journalsRoot,
+					projectKey,
+					store,
+					llm: deps.llm,
+					backupsRoot: deps.config.backupsRoot,
+					backupEnabled: deps.config.backupEnabled,
+					allowSensitiveFragments: deps.config.allowSensitiveFragments,
+					maxFragmentCharsPerRequest: deps.config.maxFragmentCharsPerRequest,
+					maxFragmentsPerRequest: deps.config.maxFragmentsPerRequest,
+
 			});
 			const lines = [
 				`任务 ${report.tasksScanned}（完成 ${report.completedTasks}），回合 ${report.turnsDistilled}（待提炼 ${report.turnsPendingDistill}）`,

@@ -6,9 +6,11 @@
  */
 import type { LlmClient } from "../llm.ts";
 import { parseJsonLoose } from "../llm.ts";
+import type { FragmentResult } from "./backup.ts";
 import type { ToolCallRecord, TurnPatch, TurnRecord, TurnRelation } from "./types.ts";
 
 export const DISTILL_SYSTEM_PROMPT = `You distill one agent-turn log (harness-recorded facts) into a compact semantic patch — an outline that loses no core content.
+If bounded text is insufficient, request only fragment IDs listed in availableFragments. Never invent IDs, paths, or offsets. Output either a direct patch or {"patch": <patch>, "needs": [{"fragmentIds":["..."],"reason":"..."}]}.
 Rules:
 - Cover EVERY tool call in order via toolPatches (use each refSequence exactly once). Never omit events.
 - Fill null when the information is absent. Do NOT invent facts, do NOT add knowledge not present in the input.
@@ -31,7 +33,26 @@ export interface PrevTurnContext {
 	unfinished: string[];
 }
 
-export function buildUserPayload(turn: TurnRecord, prev: PrevTurnContext | null): string {
+export interface FragmentNeed {
+	fragmentIds: string[];
+	reason: string;
+}
+
+export interface DistillResponse {
+	patch: TurnPatch | null;
+	needs: FragmentNeed[];
+}
+
+export interface DistillOptions {
+	availableFragments?: Array<{ fragmentId: string; field: string; side: string; originalChars: number; sensitivity: string }>;
+	fragments?: FragmentResult[];
+	allowSensitiveFragments?: boolean;
+	maxFragments?: number;
+	maxFragmentChars?: number;
+	readFragments?: (request: { fragmentIds: string[]; maxFragments?: number; maxChars?: number; allowSensitive?: boolean }) => FragmentResult[] | Promise<FragmentResult[]>;
+}
+
+export function buildUserPayload(turn: TurnRecord, prev: PrevTurnContext | null, options: DistillOptions = {}): string {
 	const facts = {
 		previousTurn: prev
 			? { intent: prev.intent, relation: prev.relation, unfinished: prev.unfinished }
@@ -43,15 +64,44 @@ export function buildUserPayload(turn: TurnRecord, prev: PrevTurnContext | null)
 		assistantText: turn.assistantTextRaw ?? null,
 		outcome: turn.outcome,
 		toolCalls: turn.toolCalls.map((tc) => ({
-			refSequence: tc.refSequence,
-			tool: tc.tool,
-			args: tc.argsRaw,
-			reasoning: tc.reasoningRaw ?? null,
-			status: tc.status,
-			result: tc.resultRaw,
-		})),
-	};
+				refSequence: tc.refSequence,
+				tool: tc.tool,
+				args: tc.argsRaw,
+				reasoning: tc.reasoningRaw ?? null,
+				status: tc.status,
+				result: tc.resultRaw,
+			})),
+			availableFragments: options.availableFragments ?? [],
+			backupFragments: (options.fragments ?? []).map((fragment) => ({
+				fragmentId: fragment.fragmentId,
+				field: fragment.field,
+				side: fragment.side,
+				start: fragment.start,
+				end: fragment.end,
+				text: fragment.text,
+			})),
+		};
+
 	return JSON.stringify(facts, null, 1);
+}
+
+function parseDistillResponse(text: string, turn: TurnRecord, lenient: boolean): DistillResponse | null {
+	const parsed = parseJsonLoose(text);
+	if (!parsed || typeof parsed !== "object") return null;
+	const obj = parsed as Record<string, unknown>;
+	const patchValue = obj.patch && typeof obj.patch === "object" ? JSON.stringify(obj.patch) : text;
+	const patch = parseDistillPatch(patchValue, turn, lenient);
+	const needsRaw = obj.needs;
+	const needs = Array.isArray(needsRaw)
+		? (needsRaw as Array<Record<string, unknown>>)
+			.filter((need) => Array.isArray(need?.fragmentIds))
+			.map((need) => ({
+				fragmentIds: (need.fragmentIds as unknown[]).filter((id): id is string => typeof id === "string"),
+				reason: typeof need.reason === "string" ? need.reason : "additional evidence requested",
+			}))
+			.filter((need) => need.fragmentIds.length > 0)
+		: [];
+	return patch || needs.length > 0 ? { patch, needs } : null;
 }
 
 /** Validate and normalize an LLM reply into a TurnPatch; null when unusable. */
@@ -101,9 +151,11 @@ export function parseDistillPatch(text: string, turn: TurnRecord, lenient = fals
 		relation,
 		plan: stringOrNull(obj.plan),
 		toolPatches,
-		unfinished,
-		errorSummary: stringOrNull(obj.errorSummary),
-	};
+			unfinished,
+			errorSummary: stringOrNull(obj.errorSummary),
+			sourceFragments: Array.isArray(obj.sourceFragments) ? obj.sourceFragments.filter((id): id is string => typeof id === "string") : undefined,
+		};
+
 }
 
 function stringOrNull(value: unknown): string | null {
@@ -124,14 +176,33 @@ export async function distillTurn(
 	turn: TurnRecord,
 	prev: PrevTurnContext | null,
 	llm: LlmClient,
+	options: DistillOptions = {},
 ): Promise<TurnPatch | null> {
-	const payload = buildUserPayload(turn, prev);
 	const maxTokens = distillMaxTokens(turn);
+	let fragments: FragmentResult[] = options.fragments ?? [];
 	for (const lenient of [false, true]) {
 		try {
+			const payload = buildUserPayload(turn, prev, { ...options, fragments });
 			const text = await llm.complete({ systemPrompt: DISTILL_SYSTEM_PROMPT, userPayload: payload, maxTokens });
-			const patch = parseDistillPatch(text, turn, lenient);
-			if (patch) return patch;
+			const response = parseDistillResponse(text, turn, lenient);
+			if (!response) continue;
+			if (response.needs.length > 0 && options.readFragments && fragments.length === 0) {
+				const requested = [...new Set(response.needs.flatMap((need) => need.fragmentIds))];
+				const allowed = new Set((options.availableFragments ?? []).map((fragment) => fragment.fragmentId));
+				const validRequested = requested.filter((id) => allowed.has(id));
+				if (validRequested.length === 0) continue;
+				fragments = await options.readFragments({
+					fragmentIds: validRequested,
+					maxFragments: options.maxFragments,
+					maxChars: options.maxFragmentChars,
+					allowSensitive: options.allowSensitiveFragments,
+				});
+				continue;
+			}
+			if (response.patch) {
+				if (fragments.length > 0) response.patch.sourceFragments = fragments.map((fragment) => fragment.fragmentId);
+				return response.patch;
+			}
 		} catch {
 			// fall through to the next strategy level
 		}

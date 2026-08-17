@@ -134,7 +134,34 @@ describe("D1: distillation parsing", () => {
 	});
 });
 
-describe("D2: distillation tolerance", () => {
+	describe("D2: distillation tolerance", () => {
+		it("requests indexed fragments and records their source", async () => {
+			const fragment = { fragmentId: "e1-tool-result-t01", eventSeq: 1, turnSeq: 1, field: "tool.result" as const, side: "tail" as const, originalChars: 4000, sensitivity: "normal" as const, start: 3000, end: 4000, text: "最终测试通过" };
+			const patch = JSON.stringify({
+				intent: "确认测试结果",
+				relation: "new",
+				toolPatches: sampleTurn().toolCalls.map((tool) => ({ refSequence: tool.refSequence, intent: "调用", argsSummary: null, resultSummary: "结果", significance: "helpful", followUp: null })),
+				unfinished: [],
+				errorSummary: null,
+			});
+			const llm = new FakeLlm([
+				JSON.stringify({ needs: [{ fragmentIds: [fragment.fragmentId], reason: "需要确认末尾结果" }] }),
+				patch,
+			]);
+			const result = await distillTurn(sampleTurn(), null, llm, {
+				availableFragments: [fragment],
+				readFragments: ({ fragmentIds }) => fragmentIds.map(() => fragment),
+				maxFragments: 1,
+				maxFragmentChars: 1000,
+			});
+			expect(result).not.toBeNull();
+			expect(result?.sourceFragments).toEqual([fragment.fragmentId]);
+			expect(llm.callCount).toBe(2);
+			const secondPayload = JSON.parse(llm.calls[1].userPayload) as { backupFragments: Array<{ fragmentId: string; text: string }> };
+			expect(secondPayload.backupFragments[0].text).toContain("最终测试通过");
+	});
+
+
 	it("returns null after two unusable replies (no throw)", async () => {
 		const llm = new FakeLlm(["这不是 JSON", "还是不合法的输出"]);
 		const patch = await distillTurn(sampleTurn(), null, llm);

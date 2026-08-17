@@ -23,6 +23,10 @@
 
 事实行 append-only，提炼行通过 `seq` 合并，原始 Pi 会话仍可通过 entry id 回查。
 
+普通 journal 对长参数、结果、回复和 reasoning 使用前后保留的受控截断，并记录原文长度和可用片段 ID。完整事件会另外写入受限备份：备份保存扩展实际收到的完整 user/assistant/tool payload（包括实际暴露的 thinking；provider 未提供或已 redacted 的隐藏 COT 无法恢复），不默认进入普通上下文。
+
+当提炼模型认为截断内容不足时，它只能请求备份索引中已有的 fragment ID。系统验证任务范围、敏感权限和字符预算后，只注入请求的局部片段，再进行一次提炼；不会把整个备份放进上下文。
+
 ### 工作流库
 
 L1/L2/L3 表示执行粒度，不是功能分类：
@@ -101,6 +105,11 @@ before_agent_start
   atoms/          L1 实体
   workflows/      L2 实体
   orchestrations/ L3 实体
+
+~/.pi/agent/journal-backups/<project-key>/<task-id>/
+  events.jl       完整原始事件 JSONL（受限数据）
+  fragments.jl    预切片正文
+  index.json      fragment ID、方向、范围和来源索引
 ```
 
 本插件不创建或写入 `explorations/`、`rounds.jl` 或旧式 `scouts.jl`。
@@ -118,7 +127,15 @@ before_agent_start
     "journalsRoot": "~/.pi/agent/journals",
     "workflowsRoot": "~/.pi/agent/workflows",
     "auxModel": "provider/model",
-    "workflowPolicy": "workflow-first"
+    "workflowPolicy": "workflow-first",
+    "backupEnabled": true,
+    "backupsRoot": "~/.pi/agent/journal-backups",
+    "fragmentSize": 1000,
+    "fragmentOverlap": 100,
+    "captureToolUpdates": false,
+    "maxFragmentCharsPerRequest": 3000,
+    "maxFragmentsPerRequest": 3,
+    "allowSensitiveFragments": false
   }
 }
 ```
@@ -126,7 +143,15 @@ before_agent_start
 - `enabled`：是否启用本插件；
 - `workflowPolicy`：`workflow-first` 或 `off`；
 - `auxModel`：可选的提炼/匹配/校验模型；
+- `backupEnabled`：是否保存完整事件备份，默认开启；
+- `backupsRoot`：备份根目录；
+- `fragmentSize` / `fragmentOverlap`：预切片大小和重叠字符数；
+- `captureToolUpdates`：是否捕获高体积的工具流式增量，当前默认关闭；
+- `maxFragmentCharsPerRequest` / `maxFragmentsPerRequest`：单次按需补片预算；
+- `allowSensitiveFragments`：是否允许把 thinking/reasoning 片段提供给辅助 LLM，默认关闭；
 - `PI_JW_DISABLE=1`：临时禁用本插件。
+
+完整备份应视为 restricted/sensitive 数据。它只保证保存 Pi 扩展实际暴露的内容，不保证 provider 未返回的隐藏推理；备份不应放在共享目录中，并应按使用环境设置保留和清理策略。
 
 本插件没有探索预算或探索策略配置。探索配置属于独立的 `exploration-scout` 插件。
 
@@ -165,7 +190,7 @@ before_agent_start
 
 ```bash
 cd .pi/extensions/journal-workflow
-npx vitest run                 # 45 项通过，3 项 live 测试按条件跳过
+npx vitest run                 # 49 项通过，3 项 live 测试按条件跳过
 npx tsc -p tsconfig.check.json # strict 类型检查
 ```
 
@@ -173,7 +198,7 @@ npx tsc -p tsconfig.check.json # strict 类型检查
 
 ```text
 index.ts / adapter.ts  Pi 生命周期和事件映射
-core/journal/          事实日志、读取和 LLM 提炼
+core/journal/          事实日志、完整备份、预切片读取和 LLM 提炼
 core/library/          工作流 schema、存储和状态机
 core/engine/           匹配、指导、检查点和跳出
 core/extractor/        日志到工作流的提取管线

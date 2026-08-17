@@ -14,6 +14,14 @@ export interface JournalWorkflowConfig {
 	/** Optional dedicated aux model ("provider/model"); default: session model. */
 	auxModel?: string;
 	workflowPolicy?: "workflow-first" | "off";
+	backupEnabled?: boolean;
+	backupsRoot?: string;
+	fragmentSize?: number;
+	fragmentOverlap?: number;
+	captureToolUpdates?: boolean;
+	maxFragmentCharsPerRequest?: number;
+	maxFragmentsPerRequest?: number;
+	allowSensitiveFragments?: boolean;
 }
 
 interface SettingsFile {
@@ -23,6 +31,14 @@ interface SettingsFile {
 		workflowsRoot?: string;
 			auxModel?: string;
 			workflowPolicy?: "workflow-first" | "off";
+			backupEnabled?: boolean;
+			backupsRoot?: string;
+			fragmentSize?: number;
+			fragmentOverlap?: number;
+			captureToolUpdates?: boolean;
+			maxFragmentCharsPerRequest?: number;
+			maxFragmentsPerRequest?: number;
+			allowSensitiveFragments?: boolean;
 
 	};
 }
@@ -37,8 +53,16 @@ export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflo
 		journalsRoot: join(agentDir, "journals"),
 			workflowsRoot: join(agentDir, "workflows"),
 			workflowPolicy: "workflow-first",
+			backupEnabled: true,
+			backupsRoot: join(agentDir, "journal-backups"),
+			fragmentSize: 1000,
+			fragmentOverlap: 100,
+			captureToolUpdates: false,
+			maxFragmentCharsPerRequest: 3000,
+			maxFragmentsPerRequest: 3,
+			allowSensitiveFragments: false,
+		};
 
-	};
 	const settingsPath = join(agentDir, "settings.json");
 	if (!existsSync(settingsPath)) return envOverrides(defaults);
 	try {
@@ -50,9 +74,17 @@ export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflo
 			journalsRoot: section.journalsRoot ?? defaults.journalsRoot,
 		workflowsRoot: section.workflowsRoot ?? defaults.workflowsRoot,
 				auxModel: section.auxModel ?? defaults.auxModel,
-				workflowPolicy: section.workflowPolicy ?? defaults.workflowPolicy,
+					workflowPolicy: section.workflowPolicy ?? defaults.workflowPolicy,
+					backupEnabled: section.backupEnabled ?? defaults.backupEnabled,
+					backupsRoot: section.backupsRoot ?? defaults.backupsRoot,
+					fragmentSize: section.fragmentSize ?? defaults.fragmentSize,
+					fragmentOverlap: section.fragmentOverlap ?? defaults.fragmentOverlap,
+					captureToolUpdates: section.captureToolUpdates ?? defaults.captureToolUpdates,
+					maxFragmentCharsPerRequest: section.maxFragmentCharsPerRequest ?? defaults.maxFragmentCharsPerRequest,
+					maxFragmentsPerRequest: section.maxFragmentsPerRequest ?? defaults.maxFragmentsPerRequest,
+					allowSensitiveFragments: section.allowSensitiveFragments ?? defaults.allowSensitiveFragments,
+				});
 
-		});
 	} catch {
 		return envOverrides(defaults);
 	}
