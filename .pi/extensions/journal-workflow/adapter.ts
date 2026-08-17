@@ -239,7 +239,7 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		activeEntry = null;
 		if ((deps.config.workflowPolicy ?? "workflow-first") === "off") return undefined;
 		try {
-			const entry = await matchWorkflow(event.prompt, getStore().getRegistry(), llm, matchCache);
+			const entry = await matchWorkflow(event.prompt, getStore().getRegistry(), llm, matchCache, getStore().getCatalogFeatures());
 			if (!entry) return undefined;
 			const guidance = activateWorkflow(entry.id);
 			if (!guidance) return undefined;

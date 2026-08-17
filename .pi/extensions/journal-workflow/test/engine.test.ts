@@ -67,6 +67,23 @@ describe("E1: matcher", () => {
 		const hit = await matchWorkflow("画一张架构图", seedRegistry(), llm);
 		expect(hit).toBeNull();
 	});
+
+	it("matches an independent L2 through its functional catalog without an L3", async () => {
+		const llm = new FakeLlm([JSON.stringify({ featureIds: ["feature-web-research"] }), JSON.stringify({ id: "l2-research-docs" })]);
+		const registry: RegistryEntry[] = [
+			{ id: "l2-research-docs", level: 2, intent: "联网查阅并整理文档", evidence: 2, usage: 0, escapes: 0, status: "active", updatedAt: "" },
+		];
+		const hit = await matchWorkflow(
+			"查阅官方文档并整理成对比表",
+			registry,
+			llm,
+			undefined,
+			[{ id: "feature-web-research", label: "网络研究", description: "检索和整理外部文档", aliases: ["文档查阅"], entryIds: ["l2-research-docs"], updatedAt: "" }],
+		);
+		expect(hit?.id).toBe("l2-research-docs");
+		expect(llm.calls[1].userPayload).toContain('"level": 2');
+		expect(llm.calls[1].systemPrompt).toContain("L3 is a coarse-grained");
+	});
 });
 
 describe("E2: injector", () => {

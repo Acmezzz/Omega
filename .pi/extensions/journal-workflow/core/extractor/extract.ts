@@ -14,11 +14,14 @@ import { distillTurn } from "../journal/distill.ts";
 import type { TurnRecord } from "../journal/types.ts";
 import type { LlmClient } from "../llm.ts";
 import type { WorkflowStore } from "../library/store.ts";
-import type { L1Template, L2Workflow, Step } from "../library/types.ts";
+import type { CatalogFeature, L1Template, L2Workflow, Step } from "../library/types.ts";
 import { alignSkeletons, findRecurringPatterns, toolSequenceOfTurn } from "./segment.ts";
 import {
-	judgeSimilarity,
-	proposeAlternative,
+		judgeSimilarity,
+		matchExistingCatalog,
+		proposeAlternative,
+		proposeNewCatalog,
+
 	proposeL1,
 	proposeWorkflow,
 	type ProposedL2,
@@ -33,6 +36,10 @@ export interface ExtractReport {
 	l1Created: string[];
 	l2Created: string[];
 	mergedInto: string[];
+	catalogFeaturesCreated: string[];
+	catalogEntriesAssigned: string[];
+	catalogEntriesUnmatched: string[];
+	catalogPhaseSkipped: string | null;
 	alternativesProposed: Array<{ workflowId: string; stepIndex: number; alternative: string }>;
 	skeleton: string[];
 	recurringPatterns: Array<{ tools: string[]; count: number }>;
@@ -128,13 +135,19 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 		l1Created: [],
 		l2Created: [],
 		mergedInto: [],
-		alternativesProposed: [],
+			catalogFeaturesCreated: [],
+			catalogEntriesAssigned: [],
+			catalogEntriesUnmatched: [],
+			catalogPhaseSkipped: null,
+			alternativesProposed: [],
+
 		skeleton: [],
 		recurringPatterns: [],
 	};
 
 	const tasks = loadTasks(opts.journalsRoot, opts.projectKey);
 	report.tasksScanned = tasks.length;
+	const catalogEntryIds = new Set<string>();
 
 	// ---- 0. Re-distill pending turns first (crash/timeout recovery) ----
 	if (!opts.dryRun) {
@@ -200,22 +213,26 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 		const proposed = await proposeL1(pattern, exampleTasks, opts.llm);
 		if (!proposed) continue;
 		const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm);
-		if (similarTo) {
-			if (!opts.dryRun) opts.store.mergeInto({ ...proposed, variants: [] } as unknown as L1Template, similarTo, 1);
-			report.mergedInto.push(similarTo);
-			continue;
-		}
-		if (!opts.dryRun) {
-			const entity: L1Template = {
-				id: proposed.id,
-				intent: proposed.intent,
-				calls: proposed.calls,
-				expect: proposed.expect ?? undefined,
-				variants: [],
-			};
-			opts.store.upsertEntity(entity, 1);
-		}
-		report.l1Created.push(proposed.id);
+			if (similarTo) {
+				if (!opts.dryRun) opts.store.mergeInto({ ...proposed, variants: [] } as unknown as L1Template, similarTo, 1);
+				report.mergedInto.push(similarTo);
+				catalogEntryIds.add(similarTo);
+				continue;
+			}
+
+			if (!opts.dryRun) {
+				const entity: L1Template = {
+					id: proposed.id,
+					intent: proposed.intent,
+					calls: proposed.calls,
+					expect: proposed.expect ?? undefined,
+					variants: [],
+				};
+				opts.store.upsertEntity(entity, 1);
+			}
+			catalogEntryIds.add(proposed.id);
+			report.l1Created.push(proposed.id);
+
 	}
 
 	// ---- 2. Completed-task skeletons → L2 candidate ----
@@ -252,18 +269,99 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 					intent: proposed.intent,
 					steps: stepsFromProposal(proposed),
 				};
-				if (similarTo) {
-					if (!opts.dryRun) opts.store.mergeInto(entity, similarTo, 2);
-					report.mergedInto.push(similarTo);
-				} else {
-					if (!opts.dryRun) opts.store.upsertEntity(entity, 2);
-					report.l2Created.push(proposed.id);
-				}
+					if (similarTo) {
+						if (!opts.dryRun) opts.store.mergeInto(entity, similarTo, 2);
+						report.mergedInto.push(similarTo);
+						catalogEntryIds.add(similarTo);
+					} else {
+						if (!opts.dryRun) opts.store.upsertEntity(entity, 2);
+						report.l2Created.push(proposed.id);
+						catalogEntryIds.add(proposed.id);
+					}
+
 			}
 		}
 	}
 
-	// ---- 3. Failure replay → alternatives ----
+		// ---- 3. Functional catalog maintenance: existing categories first, new ones second ----
+		const existingCatalog = opts.store.getCatalogFeatures();
+		const indexedIds = new Set(existingCatalog.flatMap((feature) => feature.entryIds));
+		if (existingCatalog.length === 0) {
+			for (const entry of opts.store.getRegistry()) catalogEntryIds.add(entry.id);
+		} else {
+			for (const entry of opts.store.getRegistry()) {
+				if (!indexedIds.has(entry.id)) catalogEntryIds.add(entry.id);
+			}
+		}
+		const catalogEntries = opts.store
+			.getRegistry()
+			.filter((entry) => catalogEntryIds.has(entry.id))
+			.map(({ id, level, intent, excludes }) => ({ id, level, intent, excludes }));
+		const featureCards = existingCatalog.map(({ id, label, description, aliases }) => ({ id, label, description, aliases }));
+		const knownEntryIds = new Set(catalogEntries.map((entry) => entry.id));
+		const matchedExistingIds = new Set<string>();
+		let unmatchedEntries = catalogEntries;
+
+		if (catalogEntries.length > 0 && existingCatalog.length > 0) {
+			const existingMatch = await matchExistingCatalog(featureCards, catalogEntries, opts.llm);
+			if (!existingMatch) {
+				report.catalogPhaseSkipped = "existing-match-failed";
+			} else {
+				const knownFeatureIds = new Set(existingCatalog.map((feature) => feature.id));
+				for (const assignment of existingMatch.assignments) {
+					if (!knownEntryIds.has(assignment.entryId)) continue;
+					const validFeatureIds = [...new Set(assignment.featureIds)].filter((id) => knownFeatureIds.has(id));
+					if (validFeatureIds.length === 0) continue;
+					matchedExistingIds.add(assignment.entryId);
+					for (const featureId of validFeatureIds) {
+						if (!opts.dryRun) {
+							const feature = existingCatalog.find((item) => item.id === featureId)!;
+							opts.store.upsertCatalogFeature({ ...feature, entryIds: [assignment.entryId] });
+						}
+						report.catalogEntriesAssigned.push(`${assignment.entryId}→${featureId}`);
+					}
+				}
+				unmatchedEntries = catalogEntries.filter((entry) => !matchedExistingIds.has(entry.id));
+			}
+		} else {
+			report.catalogPhaseSkipped = existingCatalog.length === 0 ? "no-existing-categories" : null;
+		}
+
+		if (report.catalogPhaseSkipped !== "existing-match-failed") {
+			report.catalogEntriesUnmatched.push(...unmatchedEntries.map((entry) => entry.id));
+			if (unmatchedEntries.length > 0) {
+				const newProposal = await proposeNewCatalog(featureCards, unmatchedEntries, opts.llm);
+				if (!newProposal) {
+					report.catalogPhaseSkipped = report.catalogPhaseSkipped ?? "new-category-proposal-failed";
+				} else {
+					const existingFeatureIds = new Set(existingCatalog.map((feature) => feature.id));
+					const validNewFeatures = newProposal.newFeatures.filter(
+						(feature) => /^feature-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(feature.id) && !existingFeatureIds.has(feature.id),
+					);
+					const newFeatureIds = new Set(validNewFeatures.map((feature) => feature.id));
+					const proposedFeatures = new Map(validNewFeatures.map((feature) => [feature.id, feature]));
+					for (const feature of validNewFeatures) {
+						if (!opts.dryRun) opts.store.upsertCatalogFeature({ ...feature, entryIds: [] });
+						report.catalogFeaturesCreated.push(feature.id);
+					}
+					const unmatchedIds = new Set(unmatchedEntries.map((entry) => entry.id));
+					for (const assignment of newProposal.assignments) {
+						if (!unmatchedIds.has(assignment.entryId)) continue;
+						for (const featureId of new Set(assignment.featureIds)) {
+							if (!newFeatureIds.has(featureId)) continue;
+							if (!opts.dryRun) {
+								const feature = proposedFeatures.get(featureId)!;
+								opts.store.upsertCatalogFeature({ ...feature, entryIds: [assignment.entryId] });
+							}
+							report.catalogEntriesAssigned.push(`${assignment.entryId}→${featureId}`);
+						}
+					}
+				}
+			}
+		}
+
+
+	// ---- 4. Failure replay → alternatives ----
 	for (const task of tasks) {
 		for (const raw of task.failures) {
 			const failure = raw as FailureRecordShape;

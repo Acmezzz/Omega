@@ -25,6 +25,116 @@ Output ONLY JSON: {"similarTo": "<existing id>"} or {"similarTo": null}`;
 export const ALTERNATIVE_SYSTEM_PROMPT = `A workflow step failed and the agent later solved the task in free mode. Propose which library entity (or free mode) should be tried first when this step fails again.
 Output ONLY JSON: {"alternative": "<l1-/l2- id or \\"free\\">", "note": "一句话依据"}`;
 
+export const MATCH_EXISTING_CATALOG_SYSTEM_PROMPT = `You assign workflow entries to an existing flat functional catalog.
+The catalog groups what workflows do; it is not an L1/L2/L3 hierarchy. Do not create, rename, or modify categories.
+Use only feature IDs present in the input. An entry may belong to multiple existing features. If no existing feature fits, put the entry ID in unmatchedEntryIds.
+Output ONLY JSON: {"assignments":[{"entryId":"...","featureIds":["existing-feature-id"]}],"unmatchedEntryIds":["entry-id"]}`;
+
+export const PROPOSE_NEW_CATALOG_SYSTEM_PROMPT = `You create flat functional catalog categories only for unmatched workflow entries.
+The category should express a reusable capability and have only a short label, simple description, and optional aliases. Do not create hierarchy, tags, execution-level categories, or copy workflow steps. Do not reuse any existing feature ID from the input.
+Every new category must be useful for the supplied unmatched entries; do not invent unrelated categories.
+Output ONLY JSON: {"newFeatures":[{"id":"feature-kebab-case","label":"...","description":"...","aliases":["..."]}],"assignments":[{"entryId":"unmatched-entry-id","featureIds":["new-feature-id"]}]}`;
+
+export interface CatalogAssignment {
+	entryId: string;
+	featureIds: string[];
+}
+
+export interface CatalogMatchProposal {
+	assignments: CatalogAssignment[];
+	unmatchedEntryIds: string[];
+}
+
+export interface ProposedCatalogFeature {
+	id: string;
+	label: string;
+	description: string;
+	aliases: string[];
+}
+
+export interface CatalogProposal {
+	assignments: CatalogAssignment[];
+	newFeatures: ProposedCatalogFeature[];
+}
+
+type CatalogFeatureCard = { id: string; label: string; description: string; aliases: string[] };
+type CatalogEntryCard = Pick<RegistryEntry, "id" | "level" | "intent" | "excludes">;
+
+function parseAssignments(obj: Record<string, unknown>): CatalogAssignment[] {
+	return Array.isArray(obj.assignments)
+		? (obj.assignments as Array<Record<string, unknown>>)
+			.filter((item) => typeof item?.entryId === "string" && Array.isArray(item.featureIds))
+			.map((item) => ({
+				entryId: item.entryId as string,
+				featureIds: (item.featureIds as unknown[]).filter((id): id is string => typeof id === "string"),
+			}))
+		: [];
+}
+
+export async function matchExistingCatalog(
+	features: CatalogFeatureCard[],
+	entries: CatalogEntryCard[],
+	llm: LlmClient,
+): Promise<CatalogMatchProposal | null> {
+	if (entries.length === 0) return { assignments: [], unmatchedEntryIds: [] };
+	try {
+		const text = await llm.complete({
+			systemPrompt: MATCH_EXISTING_CATALOG_SYSTEM_PROMPT,
+			userPayload: JSON.stringify({ features, entries }),
+			maxTokens: 500,
+		});
+		const parsed = parseJsonLoose(text);
+		if (!parsed || typeof parsed !== "object") return null;
+		const obj = parsed as Record<string, unknown>;
+		const unmatchedEntryIds = Array.isArray(obj.unmatchedEntryIds)
+			? (obj.unmatchedEntryIds as unknown[]).filter((id): id is string => typeof id === "string")
+			: [];
+		return { assignments: parseAssignments(obj), unmatchedEntryIds };
+	} catch {
+		return null;
+	}
+}
+
+export async function proposeNewCatalog(
+	features: CatalogFeatureCard[],
+	entries: CatalogEntryCard[],
+	llm: LlmClient,
+): Promise<CatalogProposal | null> {
+	if (entries.length === 0) return { assignments: [], newFeatures: [] };
+	try {
+		const text = await llm.complete({
+			systemPrompt: PROPOSE_NEW_CATALOG_SYSTEM_PROMPT,
+			userPayload: JSON.stringify({ existingFeatures: features, unmatchedEntries: entries }),
+			maxTokens: 700,
+		});
+		const parsed = parseJsonLoose(text);
+		if (!parsed || typeof parsed !== "object") return null;
+		const obj = parsed as Record<string, unknown>;
+		const newFeatures = Array.isArray(obj.newFeatures)
+			? (obj.newFeatures as Array<Record<string, unknown>>)
+				.filter((item) => typeof item?.id === "string" && typeof item.label === "string" && typeof item.description === "string")
+				.map((item) => ({
+					id: item.id as string,
+					label: item.label as string,
+					description: item.description as string,
+					aliases: Array.isArray(item.aliases) ? (item.aliases as unknown[]).filter((x): x is string => typeof x === "string") : [],
+				}))
+			: [];
+		return { assignments: parseAssignments(obj), newFeatures };
+	} catch {
+		return null;
+	}
+}
+
+/** @deprecated Use matchExistingCatalog followed by proposeNewCatalog. */
+export async function proposeCatalog(
+	features: CatalogFeatureCard[],
+	entries: CatalogEntryCard[],
+	llm: LlmClient,
+): Promise<CatalogProposal | null> {
+	return proposeNewCatalog(features, entries, llm);
+}
+
 export interface TaskSummaryForProposal {
 	taskId: string;
 	outcome: string;

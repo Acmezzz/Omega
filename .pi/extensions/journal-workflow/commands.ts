@@ -1,5 +1,5 @@
 /**
- * Slash commands: /wf-extract, /wf-list, /wf-stats.
+ * Slash commands: /wf-extract, /wf-list, /wf-catalog, /wf-stats.
  * Output goes through a notify callback so the module stays testable
  * (the adapter wires it to ctx.ui.notify with a console fallback).
  */
@@ -40,8 +40,11 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 				`共现模式：${report.recurringPatterns.map((p) => `${p.tools.join("→")}×${p.count}`).join("、") || "无"}`,
 				`骨架：${report.skeleton.join(" → ") || "无"}`,
 				`新建 L1：${report.l1Created.join("、") || "无"}；新建 L2：${report.l2Created.join("、") || "无"}`,
-				`归并：${report.mergedInto.join("、") || "无"}`,
-				`补充分支：${report.alternativesProposed.map((a) => `${a.workflowId}#${a.stepIndex}→${a.alternative}`).join("、") || "无"}`,
+					`归并：${report.mergedInto.join("、") || "无"}`,
+					`目录：新建 ${report.catalogFeaturesCreated.join("、") || "无"}；归类 ${report.catalogEntriesAssigned.join("、") || "无"}；未归类 ${report.catalogEntriesUnmatched.join("、") || "无"}`,
+					`目录阶段：${report.catalogPhaseSkipped ?? "完整执行"}`,
+					`补充分支：${report.alternativesProposed.map((a) => `${a.workflowId}#${a.stepIndex}→${a.alternative}`).join("、") || "无"}`,
+
 			];
 			notify(lines.join("\n"));
 		},
@@ -64,6 +67,19 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 					)
 					.join("\n"),
 			);
+		},
+	});
+
+	pi.registerCommand("wf-catalog", {
+		description: "查看按功能组织的工作流目录",
+		handler: async (_args, _ctx) => {
+			const store = WorkflowStore.load(deps.config.workflowsRoot);
+			const features = store.getCatalogFeatures();
+			if (features.length === 0) {
+				notify("功能目录为空；请先运行 /wf-extract");
+				return;
+			}
+			notify(features.map((feature) => `${feature.label} (${feature.id})：${feature.description}\n  ${feature.entryIds.join("、") || "无条目"}`).join("\n"));
 		},
 	});
 

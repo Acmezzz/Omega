@@ -99,9 +99,19 @@ function extractionRouterLlm(): RouterLlm {
 				],
 			});
 		}
-		if (input.systemPrompt.startsWith("A workflow step failed")) {
-			return JSON.stringify({ alternative: "l1-bash-grep", note: "先复现拿到输出再定位" });
-		}
+			if (input.systemPrompt.startsWith("You create flat functional catalog categories")) {
+				return JSON.stringify({
+					assignments: [{ entryId: "l1-locate-symbol", featureIds: ["feature-code-navigation"] }],
+					newFeatures: [{ id: "feature-code-navigation", label: "代码导航", description: "定位和理解代码", aliases: ["代码定位"] }],
+				});
+			}
+			if (input.systemPrompt.startsWith("You assign workflow entries to an existing")) {
+				return JSON.stringify({ assignments: [], unmatchedEntryIds: [] });
+			}
+			if (input.systemPrompt.startsWith("A workflow step failed")) {
+				return JSON.stringify({ alternative: "l1-bash-grep", note: "先复现拿到输出再定位" });
+			}
+
 		return JSON.stringify({});
 	});
 }
@@ -142,8 +152,13 @@ describe("X2: extraction pipeline over the session corpus", () => {
 		expect(store.getEntry("l2-login-crash")?.status).toBe("probation");
 		expect(store.getL2("l2-login-crash")!.steps).toHaveLength(4);
 
-		// failure replay attached an alternative to the seed workflow's step 0
-		expect(report.alternativesProposed).toEqual([
+			expect(report.catalogFeaturesCreated).toContain("feature-code-navigation");
+			expect(report.catalogEntriesAssigned).toContain("l1-locate-symbol→feature-code-navigation");
+			expect(store.getCatalogFeatures().find((feature) => feature.id === "feature-code-navigation")?.entryIds).toContain("l1-locate-symbol");
+
+			// failure replay attached an alternative to the seed workflow's step 0
+			expect(report.alternativesProposed).toEqual([
+
 			{ workflowId: "l2-fix-failing-test", stepIndex: 0, alternative: "l1-bash-grep" },
 		]);
 		expect(store.getL2("l2-fix-failing-test")!.steps[0].alternative).toBe("l1-bash-grep");

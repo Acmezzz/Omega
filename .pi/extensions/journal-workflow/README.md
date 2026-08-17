@@ -25,11 +25,17 @@
 
 ### 工作流库
 
+L1/L2/L3 表示执行粒度，不是功能分类：
+
 ```text
-L1 模板      最小工具组合
-L2 工作流    带检查点、重试和失败分支的中等流程
-L3 编排      引用 L2 的大型任务骨架
+L1 模板      细粒度、通用的最小工具组合
+L2 工作流    中等粒度、带检查点、重试和失败分支的专用流程
+L3 编排      粗粒度、由多个阶段组成的大型任务骨架
 ```
+
+功能分类由提取阶段逐步维护在 `catalog.json` 中。分类是扁平的能力摘要，可以同时包含 L1、L2 和 L3；L1/L2/L3 是执行粒度，不是分类维度。每次 `/wf-extract` 在同一轮内分两阶段维护目录：先只尝试把新条目归入已有分类，无法归入的条目才进入新分类提议阶段。阶段失败时不会因为一次 LLM 异常批量创建新分类。
+
+目录只保存类别 ID、名称、简短描述、别名和内部工作流 ID 索引，不复制工作流步骤。运行时先用目录摘要路由功能，再用包含 `level` 的工作流卡片选择具体条目；命中后才按需加载实体详情。
 
 工作流状态：
 
@@ -68,14 +74,15 @@ before_agent_start
 
 | 命令 | 作用 |
 |---|---|
-| `/wf-extract` | 从日志中提取或更新工作流 |
+| `/wf-extract` | 从日志中提取或更新工作流，并在同一轮维护功能目录 |
 | `/wf-list` | 查看工作流 registry、状态和证据 |
+| `/wf-catalog` | 查看按功能组织的目录类别和成员 |
 | `/wf-stats` | 查看项目日志统计和失败记录 |
 
 推荐循环：
 
 ```text
-主 Agent 正式执行 → journal 自动记录 → /wf-extract → 工作流库演进 → 后续任务得到引导
+主 Agent 正式执行 → journal 自动记录 → /wf-extract（已有类别优先，再为未归类条目提议新类别）→ 工作流库和功能目录演进 → 后续任务得到引导
 ```
 
 ---
@@ -89,10 +96,11 @@ before_agent_start
   failures.jl    工作流跳出记录
 
 ~/.pi/agent/workflows/
-  registry.json
-  atoms/         L1
-  workflows/     L2
-  orchestrations/ L3
+  registry.json   工作流摘要、状态和证据
+  catalog.json    按抽象功能组织的目录摘要
+  atoms/          L1 实体
+  workflows/      L2 实体
+  orchestrations/ L3 实体
 ```
 
 本插件不创建或写入 `explorations/`、`rounds.jl` 或旧式 `scouts.jl`。
@@ -157,7 +165,7 @@ before_agent_start
 
 ```bash
 cd .pi/extensions/journal-workflow
-npx vitest run                 # 40 项通过，3 项 live 测试按条件跳过
+npx vitest run                 # 45 项通过，3 项 live 测试按条件跳过
 npx tsc -p tsconfig.check.json # strict 类型检查
 ```
 

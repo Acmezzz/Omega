@@ -16,6 +16,8 @@ import {
 	type L2Workflow,
 	type L3Orchestration,
 	type RegistryEntry,
+	type CatalogFeature,
+	type CatalogFile,
 	entityDir,
 	isL1,
 	isL2,
@@ -30,13 +32,37 @@ export interface RegistryFile {
 	entries: RegistryEntry[];
 }
 
+const EMPTY_CATALOG: CatalogFile = { version: 1, updatedAt: "", features: [] };
+
+function readCatalog(rootDir: string): CatalogFile {
+	const path = join(rootDir, "catalog.json");
+	if (!existsSync(path)) return { ...EMPTY_CATALOG, features: [] };
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<CatalogFile>;
+		if (!Array.isArray(parsed.features)) return { ...EMPTY_CATALOG, features: [] };
+		return {
+			version: 1,
+			updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+			features: parsed.features.filter((feature): feature is CatalogFeature =>
+				!!feature && typeof feature === "object" && typeof feature.id === "string" &&
+					typeof feature.label === "string" && typeof feature.description === "string" &&
+					Array.isArray(feature.aliases) && Array.isArray(feature.entryIds),
+			),
+		};
+	} catch {
+		return { ...EMPTY_CATALOG, features: [] };
+	}
+}
+
 export class WorkflowStore {
 	private readonly rootDir: string;
 	private entries: RegistryEntry[];
+	private catalog: CatalogFile;
 
-	private constructor(rootDir: string, entries: RegistryEntry[]) {
+	private constructor(rootDir: string, entries: RegistryEntry[], catalog: CatalogFile) {
 		this.rootDir = rootDir;
 		this.entries = entries;
+		this.catalog = catalog;
 	}
 
 	static load(rootDir: string): WorkflowStore {
@@ -50,7 +76,7 @@ export class WorkflowStore {
 				entries = [];
 			}
 		}
-		return new WorkflowStore(rootDir, entries);
+		return new WorkflowStore(rootDir, entries, readCatalog(rootDir));
 	}
 
 	/** Create an empty store at root (used by seeds/tests). */
@@ -58,11 +84,70 @@ export class WorkflowStore {
 		mkdirSync(join(rootDir, "atoms"), { recursive: true });
 		mkdirSync(join(rootDir, "workflows"), { recursive: true });
 		mkdirSync(join(rootDir, "orchestrations"), { recursive: true });
-		return new WorkflowStore(rootDir, []);
+		return new WorkflowStore(rootDir, [], { ...EMPTY_CATALOG, features: [] });
 	}
 
 	getRegistry(): RegistryEntry[] {
 		return [...this.entries];
+	}
+
+	getCatalog(): CatalogFile {
+		return {
+			...this.catalog,
+			features: this.catalog.features.map((feature) => ({ ...feature, aliases: [...feature.aliases], entryIds: [...feature.entryIds] })),
+		};
+	}
+
+	/** Return catalog features with registry references that still exist. */
+	getCatalogFeatures(): CatalogFeature[] {
+		const known = new Set(this.entries.map((entry) => entry.id));
+		return this.getCatalog().features.map((feature) => ({
+			...feature,
+			entryIds: feature.entryIds.filter((id) => known.has(id)),
+		}));
+	}
+
+	/** Add a feature or merge its members idempotently. Unknown entry IDs are ignored. */
+	upsertCatalogFeature(feature: Omit<CatalogFeature, "updatedAt"> & { updatedAt?: string }): CatalogFeature {
+		const now = new Date().toISOString();
+		const known = new Set(this.entries.map((entry) => entry.id));
+		const incomingIds = feature.entryIds.filter((id) => known.has(id));
+		const existing = this.catalog.features.find((item) => item.id === feature.id);
+		if (existing) {
+			existing.label = feature.label || existing.label;
+			existing.description = feature.description || existing.description;
+			existing.aliases = [...new Set([...existing.aliases, ...feature.aliases])];
+			existing.entryIds = [...new Set([...existing.entryIds, ...incomingIds])];
+			existing.updatedAt = now;
+		} else {
+			this.catalog.features.push({
+				id: feature.id,
+				label: feature.label,
+				description: feature.description,
+				aliases: [...new Set(feature.aliases)],
+				entryIds: [...new Set(incomingIds)],
+				updatedAt: feature.updatedAt ?? now,
+			});
+		}
+		this.catalog.updatedAt = now;
+		this.saveCatalog();
+		return this.catalog.features.find((item) => item.id === feature.id)!;
+	}
+
+	/** Remove dangling registry references and duplicate members, then persist. */
+	repairCatalog(): CatalogFile {
+		const known = new Set(this.entries.map((entry) => entry.id));
+		const seenFeatures = new Set<string>();
+		this.catalog.features = this.catalog.features.filter((feature) => {
+			if (seenFeatures.has(feature.id)) return false;
+			seenFeatures.add(feature.id);
+			feature.entryIds = [...new Set(feature.entryIds.filter((id) => known.has(id)))];
+			feature.aliases = [...new Set(feature.aliases)];
+			return true;
+		});
+		this.catalog.updatedAt = new Date().toISOString();
+		this.saveCatalog();
+		return this.getCatalog();
 	}
 
 	getEntry(id: string): RegistryEntry | undefined {
@@ -208,6 +293,11 @@ export class WorkflowStore {
 	save(): void {
 		mkdirSync(this.rootDir, { recursive: true });
 		writeFileSync(join(this.rootDir, "registry.json"), `${JSON.stringify({ entries: this.entries }, null, "\t")}\n`);
+	}
+
+	private saveCatalog(): void {
+		mkdirSync(this.rootDir, { recursive: true });
+		writeFileSync(join(this.rootDir, "catalog.json"), `${JSON.stringify(this.catalog, null, "\t")}\n`);
 	}
 
 	/** Scan entity files not present in the registry (repair helper). */

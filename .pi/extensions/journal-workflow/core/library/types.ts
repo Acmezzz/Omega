@@ -22,6 +22,23 @@ export interface RegistryEntry {
 	updatedAt: string;
 }
 
+/** Functional grouping is orthogonal to execution level (L1/L2/L3). */
+export interface CatalogFeature {
+	id: string;
+	label: string;
+	description: string;
+	aliases: string[];
+	/** Registry IDs; entity contents remain in their level-specific files. */
+	entryIds: string[];
+	updatedAt: string;
+}
+
+export interface CatalogFile {
+	version: 1;
+	updatedAt: string;
+	features: CatalogFeature[];
+}
+
 export interface L1Template {
 	id: string;
 	intent: string;
