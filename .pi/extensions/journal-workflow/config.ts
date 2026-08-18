@@ -5,13 +5,13 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 export interface JournalWorkflowConfig {
 	enabled: boolean;
 	journalsRoot: string;
 	workflowsRoot: string;
-	/** Optional dedicated aux model ("provider/model"); default: session model. */
+	/** Reserved for a future dedicated aux model; currently the session model is used. */
 	auxModel?: string;
 	workflowPolicy?: "workflow-first" | "off";
 	backupEnabled?: boolean;
@@ -47,6 +47,11 @@ export function defaultAgentDir(): string {
 	return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 }
 
+function resolveConfiguredPath(value: string, agentDir: string): string {
+	const expanded = value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
+	return isAbsolute(expanded) ? expanded : join(agentDir, expanded);
+}
+
 export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflowConfig {
 	const defaults: JournalWorkflowConfig = {
 		enabled: true,
@@ -71,12 +76,12 @@ export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflo
 		return envOverrides({
 			...defaults,
 			enabled: section.enabled ?? defaults.enabled,
-			journalsRoot: section.journalsRoot ?? defaults.journalsRoot,
-		workflowsRoot: section.workflowsRoot ?? defaults.workflowsRoot,
+					journalsRoot: resolveConfiguredPath(section.journalsRoot ?? defaults.journalsRoot, agentDir),
+			workflowsRoot: resolveConfiguredPath(section.workflowsRoot ?? defaults.workflowsRoot, agentDir),
 				auxModel: section.auxModel ?? defaults.auxModel,
 					workflowPolicy: section.workflowPolicy ?? defaults.workflowPolicy,
 					backupEnabled: section.backupEnabled ?? defaults.backupEnabled,
-					backupsRoot: section.backupsRoot ?? defaults.backupsRoot,
+						backupsRoot: section.backupsRoot ? resolveConfiguredPath(section.backupsRoot, agentDir) : defaults.backupsRoot,
 					fragmentSize: section.fragmentSize ?? defaults.fragmentSize,
 					fragmentOverlap: section.fragmentOverlap ?? defaults.fragmentOverlap,
 					captureToolUpdates: section.captureToolUpdates ?? defaults.captureToolUpdates,

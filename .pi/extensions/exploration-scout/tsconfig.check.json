@@ -9,5 +9,5 @@
 		"allowImportingTsExtensions": true,
 		"types": ["node"]
 	},
-	"include": ["index.ts", "adapter.ts", "commands.ts", "config.ts", "core/**/*.ts", "test/**/*.ts"]
+	"include": ["index.ts", "adapter.ts", "config.ts", "core/**/*.ts", "test/**/*.ts"]
 }

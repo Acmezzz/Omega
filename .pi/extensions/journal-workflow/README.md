@@ -1,124 +1,162 @@
-# journal-workflow：日志与工作流自进化插件
+# journal-workflow：日志、工作流与可追溯演进
 
-`journal-workflow` 是一个独立的 Pi 扩展，负责两件相互关联但都属于**记忆系统**的能力：
+`journal-workflow` 是一个独立的 Pi 扩展，负责正式任务的事实记录和可复用工作流演进：
 
-1. 忠实保存主 Agent 的正式执行日志；
-2. 从日志中提取、验证和维护可复用工作流。
+1. 记录主 Agent 实际收到和执行的正式事件；
+2. 在受控上下文中追加 LLM 语义提炼；
+3. 从历史任务提取、合并和维护 L1/L2/L3 工作流；
+4. 在后续任务开始时匹配工作流并提供可验证的执行引导。
 
-它不启动 Scout，不注册 `explore_space` / `select_exploration`，不读取探索插件的候选报告，也不把探索结果直接当作工作流证据。
+它**不启动 Scout**，不注册 `explore_space` / `select_exploration`，不读取探索候选，也不会把探索选择自动算作 workflow evidence。探索空间由独立的 `exploration-scout` 负责。
 
----
+## 1. 产品边界与能力等级
 
-## 1. 职责
+### 日志链路
 
-### 会话日志
+```text
+Pi 生命周期事件
+  → append-only 事实 turn
+  → 受控截断与 fragment 索引
+  → LLM 语义 patch
+  → /wf-extract 提取与演进
+```
 
-程序直接记录事实，LLM 只追加语义提炼 patch：
+程序直接保存事实，LLM 只追加 patch，不改写事实行。普通 journal 保存用户输入、assistant 正文、正式工具调用、参数、结果、状态、可见 reasoning、回合结果和未完成事项。长字段使用 head-tail 截断，并保留原文长度、截断信息和 fragment ID。
 
-- 用户输入和主 Agent 正文；
-- 每个正式工具调用、参数、结果和成功/失败状态；
-- 工具调用前的可见 reasoning 片段；
-- 工具目的、实际贡献、结果摘要和后续动作；
-- 回合关系、任务本质、交付物、未完成事项和错误摘要。
+完整事件可以另外保存到受限备份。备份只包含扩展实际收到的内容；provider 没有返回或已经 redacted 的隐藏推理无法恢复。敏感 thinking/reasoning 默认不会提供给辅助提炼模型。
 
-事实行 append-only，提炼行通过 `seq` 合并，原始 Pi 会话仍可通过 entry id 回查。
+### 工作流粒度
 
-普通 journal 对长参数、结果、回复和 reasoning 使用前后保留的受控截断，并记录原文长度和可用片段 ID。完整事件会另外写入受限备份：备份保存扩展实际收到的完整 user/assistant/tool payload（包括实际暴露的 thinking；provider 未提供或已 redacted 的隐藏 COT 无法恢复），不默认进入普通上下文。
-
-当提炼模型认为截断内容不足时，它只能请求备份索引中已有的 fragment ID。系统验证任务范围、敏感权限和字符预算后，只注入请求的局部片段，再进行一次提炼；不会把整个备份放进上下文。
-
-### 工作流库
-
-L1/L2/L3 表示执行粒度，不是功能分类：
+L1/L2/L3 是执行粒度，不是功能分类：
 
 ```text
 L1 模板      细粒度、通用的最小工具组合
-L2 工作流    中等粒度、带检查点、重试和失败分支的专用流程
-L3 编排      粗粒度、由多个阶段组成的大型任务骨架
+L2 工作流    中等粒度、带检查点、重试、备选和 escape 的专用流程
+L3 编排      粗粒度、多阶段任务骨架；当前主要是 advisory skeleton
 ```
 
-功能分类由提取阶段逐步维护在 `catalog.json` 中。分类是扁平的能力摘要，可以同时包含 L1、L2 和 L3；L1/L2/L3 是执行粒度，不是分类维度。每次 `/wf-extract` 在同一轮内分两阶段维护目录：先只尝试把新条目归入已有分类，无法归入的条目才进入新分类提议阶段。阶段失败时不会因为一次 LLM 异常批量创建新分类。
+当前实际支持程度：
 
-目录只保存类别 ID、名称、简短描述、别名和内部工作流 ID 索引，不复制工作流步骤。运行时先用目录摘要路由功能，再用包含 `level` 的工作流卡片选择具体条目；命中后才按需加载实体详情。
+- **L1**：可直接作为轻量 guidance 使用；
+- **L2**：有运行时 tracker，可推进工具步骤、等待 checkpoint、重试、切换 L1 alternative 和 escape；
+- **L3**：可存储、分类和渲染骨架，但还没有完整的 phase tracker、阶段恢复和阶段级验证。
 
-工作流状态：
+功能目录由 `catalog.json` 维护，分类可以同时包含不同 level。`/wf-extract` 先匹配已有类别，再为无法归类的条目提议新类别；目录只保存摘要和 entry ID，不复制实体步骤。
+
+工作流 registry 状态：
 
 ```text
 probation → active → probation → deprecated
 ```
 
-工作流执行只是正式任务的引导：检查点失败时重试或切换分支，连续失败后硬跳出并恢复自由模式。
+## 2. 正式运行流程
 
----
-
-## 2. 运行方式
-
-默认 `workflowPolicy` 是 `workflow-first`：
+默认 `workflowPolicy` 为 `workflow-first`：
 
 ```text
 before_agent_start
-  → 匹配 active 工作流
-  → 注入简短 guidance
-  → 必要时创建 L2 checkpoint tracker
+  → 目录/registry 路由与工作流匹配
+  → 注入 guidance
+  → 创建或恢复 L2 tracker
   → 正式工具调用写入 workflowRef
-  → 成功/跳出反馈到 workflow evidence/escapes
+  → checkpoint 通过、重试、alternative 或 escape
+  → 完成后增加 evidence，escape 后增加 escapes
 ```
 
-如果设置为 `off`：
+tracker 当前以任务目录下的 `tracker.json` 保存活动快照。快照包括 workflow ID、步骤数量、当前步骤、retry、已消费 toolCall、工具进度和 alternative 状态。重新打开同一个 task 时，只有 workflow ID 和步骤数量都匹配才恢复；不匹配或损坏时会安全删除快照并从新流程开始。尚未完成的异步 checkpoint 不会被提前写成通过。
 
-- 仍然记录正式会话日志；
-- 仍然运行 LLM 提炼；
-- 不匹配、不注入、不执行工作流检查点。
+tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移机制。L3 阶段状态、跨进程完整事件 replay 和未 flush 的内存回合仍不能自动恢复。
 
-`off` 不会关闭日志功能。
+设置 `workflowPolicy: "off"` 时：
 
----
+- 仍记录正式日志；
+- 仍可进行 LLM 提炼和 `/wf-extract`；
+- 不匹配、不注入、不创建 tracker；
+- 不关闭备份功能。
 
-## 3. 命令
+## 3. 日志、备份与恢复
+
+### 普通 journal
+
+```text
+<journalsRoot>/<project-key>/<task-id>/
+  task.json       任务元数据、block 索引和结果
+  0001.jl         turn 事实行与 patch 行
+  0002.jl         按回合数/字节数滚动的后续 block
+  tracker.json    当前活动 L2 tracker 快照（存在时）
+  failures.jl     workflow escape 记录
+```
+
+事实行是 append-only；patch 通过 `seq` 合并。writer 重开时会扫描已有有效 turn 的最大 seq，避免过期 `task.json.turnCount` 导致重复 seq。block 新建时从实际下一 seq 开始，`task.json` 使用临时文件再 rename，降低半写风险。
+
+坏 JSON 行和缺失 block 会被容错跳过，并通过读取结果的 skipped-line 统计暴露；这不是完整数据修复工具。
+
+### 完整备份
+
+```text
+<backupsRoot>/<project-key>/<task-id>/
+  events.jl       完整事件 JSONL
+  fragments.jl    预切片正文
+  index.json      fragment/event 索引
+```
+
+备份写入 user、assistant、tool、session 等扩展实际收到的 payload。提炼模型只能先看到受控 journal 和当前 turn 的可用 fragment 摘要；它若返回 `needs`，系统只允许读取白名单 fragment ID，并应用敏感权限、数量和字符预算。
+
+当前提供的是内部读取和按需补片能力，**没有面向用户的 backup restore/replay 命令**。异常退出时，已写入 backup 的事件不会自动重建为 journal turn；未到 `agent_settled` 或 `session_shutdown` 的内存 current turn 可能只存在于 backup，需后续恢复工具处理。
+
+### 一致性边界
+
+本插件当前不保证：
+
+- 多进程同时写同一个 task 或 workflow root；
+- journal、backup、registry、entity、catalog 的跨文件事务一致性；
+- 崩溃后所有 append 与索引同时提交；
+- backup 的 retention、压缩和自动清理。
+
+备份应被视为 restricted/sensitive 数据，建议放在不共享的目录，并由部署方设置保留和销毁策略。
+
+## 4. 命令与提取水位
 
 | 命令 | 作用 |
 |---|---|
-| `/wf-extract` | 从日志中提取或更新工作流，并在同一轮维护功能目录 |
-| `/wf-list` | 查看工作流 registry、状态和证据 |
-| `/wf-catalog` | 查看按功能组织的目录类别和成员 |
-| `/wf-stats` | 查看项目日志统计和失败记录 |
+| `/wf-extract` | 重新提炼 pending turn，提取/合并工作流，并维护功能目录 |
+| `/wf-list` | 查看 registry、level、状态、evidence、usage 和 escapes |
+| `/wf-catalog` | 查看抽象功能类别及其成员 |
+| `/wf-stats` | 查看项目任务、回合、待提炼数量和 escape 记录 |
 
 推荐循环：
 
 ```text
-主 Agent 正式执行 → journal 自动记录 → /wf-extract（已有类别优先，再为未归类条目提议新类别）→ 工作流库和功能目录演进 → 后续任务得到引导
+正式执行 → journal 记录 → /wf-extract → 工作流/目录演进 → 后续任务得到 guidance
 ```
 
----
-
-## 4. 数据位置
+`/wf-extract` 会把当前项目任务的 task/seq 输入摘要保存到：
 
 ```text
-~/.pi/agent/journals/<project-key>/<task-id>/
-  task.json      任务元数据
-  0001.jl        事实行和提炼 patch（按大小/回合数滚动）
-  failures.jl    工作流跳出记录
-
-~/.pi/agent/workflows/
-  registry.json   工作流摘要、状态和证据
-  catalog.json    按抽象功能组织的目录摘要
-  atoms/          L1 实体
-  workflows/      L2 实体
-  orchestrations/ L3 实体
-
-~/.pi/agent/journal-backups/<project-key>/<task-id>/
-  events.jl       完整原始事件 JSONL（受限数据）
-  fragments.jl    预切片正文
-  index.json      fragment ID、方向、范围和来源索引
+<workflowsRoot>/.extraction-manifest.json
 ```
 
-本插件不创建或写入 `explorations/`、`rounds.jl` 或旧式 `scouts.jl`。
+同一 project、同一批 task/seq 和同一提炼状态再次执行时会返回 no-op，避免重复增加 evidence。出现新回合、pending turn 状态变化或输入摘要变化后才重新运行。这个水位是**同一输入去重**，不是完整事务回滚；registry、实体和 catalog 的多文件提交仍可能在进程崩溃时处于部分完成状态。`--dry-run`/测试调用仍会计算候选，但不会写库或 manifest。
 
----
+提取恢复已有一个基础路径：`/wf-extract` 首先重新提炼 `extractedAt` 缺失的 turn。离线补提炼目前不自动重建前序 `PrevTurnContext`，因此跨回合语义可能比在线提炼更弱。
 
 ## 5. 配置
 
-配置位于 `~/.pi/agent/settings.json` 的 `journalWorkflow` 段：
+配置文件默认位于：
+
+```text
+~/.pi/agent/settings.json
+```
+
+也可以通过 `PI_CODING_AGENT_DIR` 指定配置和默认数据根目录：
+
+```text
+PI_CODING_AGENT_DIR=/path/to/agent
+```
+
+`journalsRoot`、`workflowsRoot` 和 `backupsRoot` 支持 `~/...`；相对路径按 agent 目录解析。
+
+示例：
 
 ```json
 {
@@ -126,7 +164,6 @@ before_agent_start
     "enabled": true,
     "journalsRoot": "~/.pi/agent/journals",
     "workflowsRoot": "~/.pi/agent/workflows",
-    "auxModel": "provider/model",
     "workflowPolicy": "workflow-first",
     "backupEnabled": true,
     "backupsRoot": "~/.pi/agent/journal-backups",
@@ -140,67 +177,86 @@ before_agent_start
 }
 ```
 
-- `enabled`：是否启用本插件；
+- `enabled`：是否加载插件；
 - `workflowPolicy`：`workflow-first` 或 `off`；
-- `auxModel`：可选的提炼/匹配/校验模型；
-- `backupEnabled`：是否保存完整事件备份，默认开启；
-- `backupsRoot`：备份根目录；
+- `backupEnabled`：是否保存完整事件备份；
 - `fragmentSize` / `fragmentOverlap`：预切片大小和重叠字符数；
-- `captureToolUpdates`：是否捕获高体积的工具流式增量，当前默认关闭；
-- `maxFragmentCharsPerRequest` / `maxFragmentsPerRequest`：单次按需补片预算；
-- `allowSensitiveFragments`：是否允许把 thinking/reasoning 片段提供给辅助 LLM，默认关闭；
+- `captureToolUpdates`：是否捕获高体积流式增量，默认关闭；
+- `maxFragmentCharsPerRequest` / `maxFragmentsPerRequest`：按需补片预算；
+- `allowSensitiveFragments`：是否允许把 restricted thinking/reasoning 片段提供给辅助 LLM，默认关闭；
 - `PI_JW_DISABLE=1`：临时禁用本插件。
 
-完整备份应视为 restricted/sensitive 数据。它只保证保存 Pi 扩展实际暴露的内容，不保证 provider 未返回的隐藏推理；备份不应放在共享目录中，并应按使用环境设置保留和清理策略。
+`auxModel` 目前只是保留字段，当前 API 路径仍使用会话模型，没有独立模型解析和切换，不应把它视为已生效配置。
 
-本插件没有探索预算或探索策略配置。探索配置属于独立的 `exploration-scout` 插件。
+## 6. 与 exploration-scout 协作
 
----
-
-## 6. 与 exploration-scout 同时使用
-
-两个插件可以在同一个 Pi 会话中加载：
+两个插件可以同时加载，但存储和状态隔离：
 
 ```json
 {
-  "journalWorkflow": {
-    "enabled": true,
-    "workflowPolicy": "off"
-  },
-  "explorationScout": {
-    "enabled": true,
-    "policy": "explore-first"
-  }
+  "journalWorkflow": { "enabled": true, "workflowPolicy": "off" },
+  "explorationScout": { "enabled": true, "policy": "explore-first" }
 }
 ```
 
-此时：
+- `exploration-scout` 负责正式执行前的只读候选发散和 selection；
+- `journal-workflow` 负责正式工具调用、日志、工作流 guidance 和验证；
+- exploration selection 不会自动激活 tracker；
+- journal 不会把 Scout 候选自动写入 registry/evidence；
+- 当前没有自动的 `roundId → journal turn → verifiedOutcome` 回写协议。
 
-- `journal-workflow` 记录主 Agent 的正式执行；
-- `exploration-scout` 负责独立方案发散；
-- 两者使用不同目录和不同状态；
-- 探索选择不会激活本插件的工作流；
-- 本插件不会把 Scout 候选写入 registry 或 evidence。
+因此完整闭环仍由主 Agent 负责把“选择结果”带入正式执行，并由正式日志和工作流结果验证它。
 
-如果希望只使用工作流系统，可以不安装或关闭 `exploration-scout`。
+## 7. 排障与安全建议
 
----
+1. 没有 guidance：检查 `workflowPolicy`、registry 状态和匹配日志；`probation/deprecated` 不会按 active 路径使用。
+2. tracker 从头开始：检查 task ID 是否变化、`tracker.json` 是否损坏或 workflow 步骤是否已更新；不兼容快照会被有意丢弃。
+3. 待提炼回合：运行 `/wf-extract`；失败时保持 pending，后续可重试。
+4. fragment 不可读：检查 backup 是否启用、fragment ID 是否属于当前 task、敏感权限和预算是否允许。
+5. 数据清理：先停用写入，再备份并删除对应 task/workflow/backup 目录；当前没有自动 retention 命令。
 
-## 7. 开发与测试
+## 8. 开发与测试
 
 ```bash
 cd .pi/extensions/journal-workflow
-npx vitest run                 # 50 项通过，3 项 live 测试按条件跳过
 npx tsc -p tsconfig.check.json # strict 类型检查
+npx vitest run                 # 51 项通过，3 项 live 测试按条件跳过
 ```
 
 核心入口：
 
 ```text
-index.ts / adapter.ts  Pi 生命周期和事件映射
-core/journal/          事实日志、完整备份、预切片读取和 LLM 提炼
-core/library/          工作流 schema、存储和状态机
-core/engine/           匹配、指导、检查点和跳出
-core/extractor/        日志到工作流的提取管线
+index.ts / adapter.ts  Pi 生命周期、事件映射和 tracker 恢复
+core/journal/          事实日志、备份、fragment、提炼
+core/library/          workflow schema、registry、catalog 和演进
+core/engine/           匹配、指导、checkpoint、alternative、escape
+core/extractor/        日志到工作流的提取、水位和目录维护
 commands.ts            /wf-* 命令
 ```
+
+## 9. 已完成、部分可用与后续
+
+### 已完成
+
+- append-only 事实日志与受控 patch；
+- head-tail 截断、fragment 索引和受限按需补片；
+- L1/L2 匹配、L2 checkpoint/retry/alternative/escape；
+- task 级 tracker snapshot 恢复；
+- 同输入 extraction watermark；
+- level 隔离的 similarity 和 canonical merge；
+- 正交功能目录。
+
+### 部分可用
+
+- backup 可记录和读取 fragment，但没有用户 restore/replay；
+- L3 可存储和渲染，但没有 phase tracker；
+- `/wf-extract` 可恢复 pending distill，但目录/registry 多文件写入仍非事务；
+- 跨插件可以并行工作，但没有自动执行结果关联。
+
+### 后续优先级
+
+1. backup event replay/restore 与未 flush turn 恢复；
+2. extraction phase checkpoint、增量证据 key 和 registry/catalog 事务提交；
+3. L3 phase tracker、阶段 checkpoint 和恢复；
+4. exploration selection 与正式 journal/验证结果的关联协议；
+5. 独立 `auxModel` 模型解析、并发锁和 retention/清理策略。

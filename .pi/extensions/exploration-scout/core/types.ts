@@ -49,14 +49,23 @@ export interface ScoutReport {
 }
 export type ScoutRunStatus = "completed" | "timed_out" | "aborted" | "budget_exceeded" | "parse_failed" | "spawn_failed";
 export interface ScoutRunRecord { scoutId: string; angle: ExplorationAngle; status: ScoutRunStatus; toolCallCount: number; durationMs: number; report: ScoutReport | null; rawOutput?: string; error?: string }
-export interface ExplorationPacket { round: number; prior: PriorResolution; runs: ScoutRunRecord[]; content: string }
+export interface ExplorationPacket { round: number; prior: PriorResolution; runs: ScoutRunRecord[]; content: string; focus?: string }
 export interface ScoutRoundRecord {
 	roundId: string; taskId: string; projectKey: string; trigger: "initial" | "replan" | "targeted";
 	taskBrief: TaskBrief; model: string; budget: ExplorationBudget; prior: PriorResolution; runs: ScoutRunRecord[];
-	packet: ExplorationPacket; adoptedProposalIds: string[]; combinedPlanSummary?: string;
+	packet: ExplorationPacket; adoptedProposalIds: string[]; combinedPlanSummary?: string; focus?: string;
 	verifiedOutcome: "not-yet-executed" | "succeeded" | "failed" | "aborted";
 }
 export interface ExplorationSelection { selectedProposalIds: string[]; combinedPlanSummary: string | null; reason: string | null }
+export interface ExplorationRoundView extends ScoutRoundRecord { selection: ExplorationSelection | null }
+export interface ExplorationJournalState {
+	rounds: ScoutRoundRecord[];
+	views: ExplorationRoundView[];
+	currentRound: ExplorationRoundView | null;
+	selections: Array<{ roundId: string; selection: ExplorationSelection }>;
+	skippedLines: number;
+	invalidSelections: number;
+}
 export type ExplorationJournalLine =
 	| { kind: "round"; record: ScoutRoundRecord }
 	| { kind: "selection"; roundId: string; selection: ExplorationSelection };

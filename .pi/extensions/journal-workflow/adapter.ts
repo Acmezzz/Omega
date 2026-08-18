@@ -8,6 +8,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import type { LlmClient } from "./core/llm.ts";
 import { textFromContent } from "./core/llm.ts";
 import { JournalWriter } from "./core/journal/writer.ts";
@@ -172,7 +173,42 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		return store;
 	};
 
-	const steer = (text: string): void => {
+		const trackerSnapshotPath = (): string | null => writer ? join(writer.dir, "tracker.json") : null;
+		const clearTrackerSnapshot = (): void => {
+			const path = trackerSnapshotPath();
+			if (!path) return;
+			try { if (existsSync(path)) unlinkSync(path); } catch { /* best effort */ }
+		};
+		const saveTrackerSnapshot = (): void => {
+			if (!tracker || !tracker.active) { clearTrackerSnapshot(); return; }
+			const path = trackerSnapshotPath();
+			if (!path) return;
+			const temp = `${path}.tmp-${process.pid}`;
+			try {
+				writeFileSync(temp, `${JSON.stringify(tracker.toSnapshot(), null, "\t")}\n`);
+				renameSync(temp, path);
+			} catch {
+				try { if (existsSync(temp)) unlinkSync(temp); } catch { /* best effort */ }
+			}
+		};
+		const restoreTracker = (workflowId: string, steps: Parameters<typeof EngineTracker.fromSnapshot>[1]): EngineTracker | null => {
+			const path = trackerSnapshotPath();
+			if (!path || !existsSync(path)) return null;
+			try {
+				const snapshot = JSON.parse(readFileSync(path, "utf8")) as unknown;
+				const restored = EngineTracker.fromSnapshot(snapshot, steps, { getL1: (id) => getStore().getL1(id) });
+				if (!restored || restored.workflowId !== workflowId || !restored.active) {
+					clearTrackerSnapshot();
+					return null;
+				}
+				return restored;
+			} catch {
+				clearTrackerSnapshot();
+				return null;
+			}
+		};
+
+		const steer = (text: string): void => {
 		// CustomMessage.display is a boolean (show in UI), not display text.
 		const message = { customType: "journal-workflow", content: text, display: true };
 		try {
@@ -187,11 +223,12 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		}
 	};
 
-		const resetEngine = (): void => {
-			tracker = null;
-			activeEntry = null;
-			writer?.setActiveWorkflow(null);
-		};
+			const resetEngine = (): void => {
+				tracker = null;
+				activeEntry = null;
+				clearTrackerSnapshot();
+				writer?.setActiveWorkflow(null);
+			};
 
 		const executeEngineActions = (actions: EngineAction[]): void => {
 			for (const action of actions) {
@@ -305,13 +342,15 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 			const entry = getStore().getEntry(workflowId);
 			if (!entry || entry.status !== "active") return null;
 			if (activeEntry?.id === entry.id && tracker?.active) return renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
-			resetEngine();
-			activeEntry = entry;
-			getStore().bumpUsage(entry.id);
-			const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
-			const l2 = getStore().getL2(entry.id);
-			tracker = l2 ? new EngineTracker(l2.id, l2.steps, { getL1: (id) => getStore().getL1(id) }) : null;
-			writer?.setActiveWorkflow(entry.id);
+				const l2 = getStore().getL2(entry.id);
+				const restored = l2 ? restoreTracker(l2.id, l2.steps) : null;
+				resetEngine();
+				activeEntry = entry;
+				getStore().bumpUsage(entry.id);
+				const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
+				tracker = l2 ? (restored ?? new EngineTracker(l2.id, l2.steps, { getL1: (id) => getStore().getL1(id) })) : null;
+				if (tracker?.active) saveTrackerSnapshot();
+				writer?.setActiveWorkflow(entry.id);
 			return guidance || null;
 		};
 
@@ -378,19 +417,22 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 					const expect = step.expect;
 
 					const tracked: Promise<void> = checkExpect(expect, resultText, llm)
-						.then((outcome) => {
-							executeEngineActions(t.handleCheckpoint(outcome, resultText));
-						})
-						.catch(() => {
-							executeEngineActions(t.handleCheckpoint(null, resultText));
-						})
+							.then((outcome) => {
+								executeEngineActions(t.handleCheckpoint(outcome, resultText));
+								saveTrackerSnapshot();
+							})
+							.catch(() => {
+								executeEngineActions(t.handleCheckpoint(null, resultText));
+								saveTrackerSnapshot();
+							})
 						.finally(() => {
 							pendingChecks.delete(tracked);
 						});
 					pendingChecks.add(tracked);
-				} else if (t && completion?.matched) {
-					executeEngineActions(completion.actions);
-				}
+					} else if (t && completion?.matched) {
+						executeEngineActions(completion.actions);
+						saveTrackerSnapshot();
+					}
 
 		deps.afterEvent?.("tool_execution_end");
 	});
@@ -481,7 +523,7 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		deps.afterEvent?.("session_shutdown");
 	});
 
-	// Slash commands (/wf-extract, /wf-list, /wf-stats).
+		// Slash commands (/wf-extract, /wf-list, /wf-catalog, /wf-stats).
 	registerWorkflowCommands(
 		pi as unknown as CommandPi,
 		{

@@ -1,8 +1,8 @@
 /**
  * journal-workflow extension entry.
  * Loads config and wires the adapter; the adapter defaults to a ctx-bound
- * session-model LLM client for all auxiliary calls (distill/match/validate).
- * Engine (M3), commands (M4) and evolution (M5) attach inside wire() as they land.
+ * session-model LLM client for auxiliary distill, match and checkpoint calls;
+ * wire() connects journal events, workflow guidance, engine state and commands.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config.ts";

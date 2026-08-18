@@ -47,8 +47,9 @@ describe("explore-first adapter flow", () => {
 
 		const explore = fakePi.tools.find((tool) => (tool as { name?: string }).name === "explore_space") as { execute: Function };
 		const select = fakePi.tools.find((tool) => (tool as { name?: string }).name === "select_exploration") as { execute: Function };
-		const exploreResult = await explore.execute("call-1", { taskBrief: brief, round: 1 }, undefined, undefined, ctx);
-		expect(String(exploreResult.content[0].text)).toContain("p1");
+			const exploreResult = await explore.execute("call-1", { taskBrief: brief, round: 1, focus: "确认失败输出的来源" }, undefined, undefined, ctx);
+			expect(String(exploreResult.content[0].text)).toContain("p1");
+			expect((exploreResult.details as { packet: { focus?: string } }).packet.focus).toBe("确认失败输出的来源");
 		const selectResult = await select.execute("call-2", { selectedProposalIds: ["p1"], combinedPlanSummary: "先验证调用关系" }, undefined, undefined, ctx);
 		expect(String(selectResult.content[0].text)).toContain("不会执行任务或激活工作流");
 
@@ -56,6 +57,13 @@ describe("explore-first adapter flow", () => {
 		const roundsFile = join(taskDir, "rounds.jl");
 		expect(existsSync(roundsFile)).toBe(true);
 		const lines = readFileSync(roundsFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { kind: string });
-		expect(lines.map((line) => line.kind)).toEqual(["round", "selection"]);
-	});
+			expect(lines.map((line) => line.kind)).toEqual(["round", "selection"]);
+
+			const resumedPi = new FakePi();
+			wire(resumedPi as unknown as ExtensionAPI, { config: { enabled: true, explorationsRoot, policy: "explore-first" }, llm: new FakeLlm([]), exploration: { runScouts: async () => fakeRuns() } });
+			await resumedPi.emit("session_start", {}, ctx);
+			const resumedSelect = resumedPi.tools.find((tool) => (tool as { name?: string }).name === "select_exploration") as { execute: Function };
+			const resumedResult = await resumedSelect.execute("call-3", { selectedProposalIds: ["p1"], reason: "恢复后确认" }, undefined, undefined, ctx);
+			expect(String(resumedResult.content[0].text)).toContain("不会执行任务或激活工作流");
+		});
 });

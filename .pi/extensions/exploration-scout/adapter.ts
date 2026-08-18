@@ -5,7 +5,7 @@ import { projectKeyFromCwd } from "../_shared/task-identity.ts";
 import { registerExplorationTools, type ExplorationToolDeps } from "./tool.ts";
 import { buildMainExplorationProtocol } from "./core/prompts.ts";
 import { ExplorationJournal } from "./core/journal.ts";
-import type { ExplorationSelection, ScoutRoundRecord } from "./core/types.ts";
+import type { ExplorationRoundView, ExplorationSelection, ScoutRoundRecord } from "./core/types.ts";
 import type { ExplorationScoutConfig } from "./config.ts";
 
 interface HandlerCtx {
@@ -29,17 +29,26 @@ export interface ScoutWireDeps { config: ExplorationScoutConfig; llm?: LlmClient
 export function wire(pi: ExtensionAPI, deps: ScoutWireDeps): void {
 	let ctx: HandlerCtx | undefined;
 	let currentUserInput: string | null = null;
-	let journal: ExplorationJournal | null = null;
-	let currentRound: ScoutRoundRecord | null = null;
-	const llm = deps.llm ?? makeCtxLlm(() => ctx);
+		let journal: ExplorationJournal | null = null;
+		let currentRound: ExplorationRoundView | null = null;
+		const llm = deps.llm ?? makeCtxLlm(() => ctx);
+
+		const clearTaskState = (): void => {
+			journal = null;
+			currentRound = null;
+			currentUserInput = null;
+		};
 
 		const ensureJournal = (next: HandlerCtx): ExplorationJournal | null => {
 			const taskId = next.sessionManager?.getHeader?.()?.id;
-			if (!taskId) return null;
+			if (typeof taskId !== "string" || !taskId.trim()) {
+				clearTaskState();
+				return null;
+			}
 			const projectKey = projectKeyFromCwd(next.cwd);
 			if (journal && journal.taskId === taskId && journal.projectKey === projectKey) return journal;
 			journal = new ExplorationJournal(deps.config.explorationsRoot, projectKey, taskId);
-			currentRound = null;
+			currentRound = journal.readState().currentRound;
 			currentUserInput = null;
 			return journal;
 		};
@@ -66,23 +75,28 @@ export function wire(pi: ExtensionAPI, deps: ScoutWireDeps): void {
 			getCurrentRound: () => currentRound,
 
 		...deps.exploration,
-		onRound: ({ brief, round, packet, budget }) => {
-			const taskId = ctx?.sessionManager?.getHeader?.()?.id ?? "unknown";
-			const record: ScoutRoundRecord = {
-				roundId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-				taskId,
-				projectKey: ctx ? projectKeyFromCwd(ctx.cwd) : "unknown",
-				trigger: round > 1 ? "replan" : "initial",
-				taskBrief: brief,
-				model: ctx?.model && typeof ctx.model === "object" ? `${String((ctx.model as { provider?: unknown }).provider ?? "unknown")}/${String((ctx.model as { id?: unknown }).id ?? "unknown")}` : "unknown",
-				budget, prior: packet.prior, runs: packet.runs, packet,
-				adoptedProposalIds: [], verifiedOutcome: "not-yet-executed",
-			};
-			currentRound = record;
-			journal?.appendRound(record);
-		},
-		onSelection: (selection: ExplorationSelection) => {
-			if (currentRound) journal?.appendSelection(currentRound.roundId, selection);
+			onRound: ({ brief, round, focus, packet, budget }) => {
+				const taskId = ctx?.sessionManager?.getHeader?.()?.id;
+				if (!journal || !taskId) return;
+				const record: ScoutRoundRecord = {
+					roundId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+					taskId,
+					projectKey: projectKeyFromCwd(ctx!.cwd),
+					trigger: round > 1 ? "replan" : "initial",
+					taskBrief: brief,
+					model: ctx?.model && typeof ctx.model === "object" ? `${String((ctx.model as { provider?: unknown }).provider ?? "unknown")}/${String((ctx.model as { id?: unknown }).id ?? "unknown")}` : "unknown",
+					budget, prior: packet.prior, runs: packet.runs, packet,
+					...(focus ? { focus } : {}),
+					adoptedProposalIds: [], verifiedOutcome: "not-yet-executed",
+				};
+				journal.appendRound(record);
+				currentRound = { ...record, selection: null };
+			},
+			onSelection: (selection: ExplorationSelection) => {
+				if (currentRound && journal) {
+					journal.appendSelection(currentRound.roundId, selection);
+					currentRound = { ...currentRound, selection, adoptedProposalIds: selection.selectedProposalIds, ...(selection.combinedPlanSummary ? { combinedPlanSummary: selection.combinedPlanSummary } : {}) };
+				}
 			return "已记录探索收敛结果。现在请由主 Agent 正式执行并用外部结果验证；探索插件不会执行任务或激活工作流。";
 		},
 	});

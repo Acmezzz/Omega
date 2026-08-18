@@ -33,6 +33,21 @@ export interface ToolCompletion {
 	actions: EngineAction[];
 }
 
+export interface TrackerSnapshot {
+	version: 1;
+	workflowId: string;
+	stepCount: number;
+	currentIndex: number;
+	retryCounts: Record<string, number>;
+	completedToolCounts: Record<string, number>;
+	seenToolCallIds: string[];
+	expanded: string[];
+	alternativeId: string | null;
+	alternativeTools: string[] | null;
+	escaped: boolean;
+	updatedAt: string;
+}
+
 export const ESCAPE_DIRECTIVE =
 	"本工作流在当前任务上失效。请立即放弃该工作流，向用户说明失效的步骤与原因，然后以自由模式继续解决任务。不要继续按工作流步骤执行。";
 
@@ -54,6 +69,39 @@ export class EngineTracker {
 		this.steps = steps;
 		this.deps = deps;
 		this.currentIndex = Math.max(0, Math.min(startIndex, steps.length));
+	}
+
+	static fromSnapshot(snapshot: unknown, steps: Step[], deps: TrackerDeps): EngineTracker | null {
+		if (!snapshot || typeof snapshot !== "object") return null;
+		const value = snapshot as Partial<TrackerSnapshot>;
+		if (value.version !== 1 || typeof value.workflowId !== "string" || typeof value.stepCount !== "number" || value.stepCount !== steps.length) return null;
+		const tracker = new EngineTracker(value.workflowId, steps, deps, typeof value.currentIndex === "number" ? value.currentIndex : 0);
+		if (tracker.workflowId !== value.workflowId) return null;
+		for (const [key, count] of Object.entries(value.retryCounts ?? {})) tracker.retryCounts.set(Number(key), Number(count));
+		for (const [tool, count] of Object.entries(value.completedToolCounts ?? {})) tracker.completedToolCounts.set(tool, Number(count));
+		for (const id of value.seenToolCallIds ?? []) if (typeof id === "string") tracker.seenToolCallIds.add(id);
+		for (const id of value.expanded ?? []) if (typeof id === "string") tracker.expanded.add(id);
+		tracker.alternativeId = typeof value.alternativeId === "string" ? value.alternativeId : null;
+		tracker.alternativeTools = Array.isArray(value.alternativeTools) ? value.alternativeTools.filter((tool): tool is string => typeof tool === "string") : null;
+		tracker.escaped = value.escaped === true;
+		return tracker;
+	}
+
+	toSnapshot(): TrackerSnapshot {
+		return {
+			version: 1,
+			workflowId: this.workflowId,
+			stepCount: this.steps.length,
+			currentIndex: this.currentIndex,
+			retryCounts: Object.fromEntries(this.retryCounts),
+			completedToolCounts: Object.fromEntries(this.completedToolCounts),
+			seenToolCallIds: [...this.seenToolCallIds],
+			expanded: [...this.expanded],
+			alternativeId: this.alternativeId,
+			alternativeTools: this.alternativeTools ? [...this.alternativeTools] : null,
+			escaped: this.escaped,
+			updatedAt: new Date().toISOString(),
+		};
 	}
 
 	get escapedFlag(): boolean { return this.escaped; }

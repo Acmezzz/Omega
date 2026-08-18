@@ -24,6 +24,7 @@ export interface ScoutRunOptions {
 	brief: TaskBrief;
 	prior: PriorResolution;
 	budget: ExplorationBudget;
+	focus?: string;
 	signal?: AbortSignal;
 	/** Test seam; production uses the platform child-process spawn. */
 	spawn?: ScoutSpawn;
@@ -177,7 +178,7 @@ export async function runScout(options: ScoutRunOptions): Promise<ScoutRunRecord
 	const priorStatus = options.prior.kind;
 	let promptFile: { dir: string; file: string } | undefined;
 	try {
-		promptFile = await writePrompt(buildScoutPrompt(options.role, options.brief, options.prior));
+		promptFile = await writePrompt(buildScoutPrompt(options.role, options.brief, options.prior, options.focus));
 		const args = ["--mode", "json", "--no-session", "--thinking", "low", "--tools", "read,grep,find,ls"];
 		const ref = modelRef(options.model);
 		if (ref) args.push("--model", ref);

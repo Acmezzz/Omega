@@ -17,7 +17,7 @@ export interface ExplorationToolDeps {
 	getCurrentUserInput?: () => string | null;
 	priorProvider?: WorkflowPriorProvider;
 	runScouts?: (options: Omit<ScoutRunOptions, "role"> & { roles: ScoutRole[] }) => Promise<ScoutRunRecord[]>;
-	onRound?: (input: { brief: TaskBrief; round: number; packet: ReturnType<typeof makePacket>; budget: ExplorationBudget }) => void;
+	onRound?: (input: { brief: TaskBrief; round: number; focus?: string; packet: ReturnType<typeof makePacket>; budget: ExplorationBudget }) => void;
 	onSelection?: (selection: ExplorationSelection, ctx: ExtensionContext) => string | void;
 	getRounds?: () => ScoutRoundRecord[];
 	getCurrentRound?: () => ScoutRoundRecord | null;
@@ -56,9 +56,10 @@ export function createExploreSpaceTool(deps: ExplorationToolDeps) {
 			const brief = { ...validation.brief, rawUserInput: deps.getCurrentUserInput?.() ?? validation.brief.rawUserInput };
 			const prior = await resolvePrior(brief.rawUserInput, deps.priorProvider);
 			const roles = selectScoutRoles(budget.maxScouts, params.includeCounterexample === true);
-			const runs = await (deps.runScouts ?? runScouts)({ cwd: ctx.cwd, model: modelShape(ctx), brief, prior, budget, signal, roles });
-			const packet = makePacket(params.round ?? 1, prior, runs, budget);
-			deps.onRound?.({ brief, round: params.round ?? 1, packet, budget });
+				const focus = typeof params.focus === "string" && params.focus.trim() ? params.focus.trim() : undefined;
+				const runs = await (deps.runScouts ?? runScouts)({ cwd: ctx.cwd, model: modelShape(ctx), brief, prior, budget, focus, signal, roles });
+				const packet = makePacket(params.round ?? 1, prior, runs, budget, focus);
+				deps.onRound?.({ brief, round: params.round ?? 1, focus, packet, budget });
 			return { content: [{ type: "text", text: packet.content }], details: { packet } };
 		},
 	});

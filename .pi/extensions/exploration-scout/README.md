@@ -1,29 +1,32 @@
-# exploration-scout：独立方案空间探索插件
+# exploration-scout：独立方案空间探索
 
-`exploration-scout` 是一个独立的 Pi 扩展，负责在主 Agent 正式执行前扩大候选方案空间。
-
-它不是日志系统，也不是工作流执行器：
+`exploration-scout` 是一个独立的 Pi 扩展，用于在主 Agent 正式执行前扩大候选思路空间。它不是日志系统，也不是工作流执行器：
 
 - 不执行正式任务；
 - 不修改正式工作区；
-- 不提交代码；
-- 不激活工作流；
-- 不写 `journal-workflow` 的 `task.json`、`0001.jl` 或 `failures.jl`；
+- 不提交代码或安装依赖；
+- 不创建 `EngineTracker`，不激活 workflow；
+- 不写 `journal-workflow` 的 task journal；
 - 不增加 workflow usage/evidence；
-- 不替主 Agent 排名或选择最佳方案。
+- 不替主 Agent 排名或选择“最佳”方案。
 
----
-
-## 1. 运行协议
+## 1. 用户流程与边界
 
 ```text
-主 Agent：中立理解 → explore_space → 自己去重/组合/否定 → select_exploration → 正式执行
-Scout：独立上下文发散 → 只读轻探查 → 返回事实、假设、候选和未知
+中立 TaskBrief
+  → explore_space
+  → 多个独立 Scout 只读探查
+  → ExplorationPacket
+  → 主 Agent 自行去重、组合、否定或重设计
+  → select_exploration
+  → 主 Agent 正式执行并用外部结果验证
 ```
 
-默认 `policy` 是 `explore-first`。插件只在 `before_agent_start` 追加短协议，主 Agent 是否调用 `explore_space` 由任务情况决定。
+Scout 只返回未验证的 observation、hypothesis、proposal、unknown、反证和限制。它不声称任务完成，也不把候选当作执行约束。
 
-TaskBrief 只包含：
+默认 `policy` 为 `explore-first`。插件只在 `before_agent_start` 追加协议，是否调用 `explore_space` 由主 Agent 根据任务新颖性、歧义和风险决定。
+
+TaskBrief 可以包含：
 
 - objective；
 - deliverable；
@@ -34,11 +37,9 @@ TaskBrief 只包含：
 - relevant paths；
 - forbidden assumptions。
 
-它不能预先写入解决方案、推荐文件、工具序列或根因断言。
+TaskBrief 不能预先写入解决方案、推荐文件、工具序列或根因断言。所有这些字段都会经过方案偏置检查。
 
----
-
-## 2. 两个工具
+## 2. 工具
 
 ### `explore_space`
 
@@ -54,12 +55,13 @@ explore_space({
 行为：
 
 - 校验中立 TaskBrief；
-- 启动多个独立 `pi --no-session` Scout；
-- 默认使用当前会话同一 provider/model；
-- 默认 `thinking low`；
-- 默认只读工具：`read,grep,find,ls`；
-- 返回有大小上限的 ExplorationPacket；
-- Scout 报告只包含 observation、hypothesis、proposal、unknown 和限制。
+- 按 task 的 round budget 拒绝重复或超预算轮次；
+- 启动多个独立的 `pi --no-session` Scout；
+- 默认使用当前会话的 provider/model，thinking 为 low；
+- 默认只读工具为 `read,grep,find,ls`；
+- `focus` 会进入 Scout prompt，作为“待检验的定向问题”，不会被当作既定方案；
+- 返回受 `maxPacketChars` 限制的 ExplorationPacket；
+- 将 round、focus、模型、预算、Scout 状态和报告追加到 exploration journal。
 
 ### `select_exploration`
 
@@ -71,30 +73,68 @@ select_exploration({
 })
 ```
 
-它只记录主 Agent 的收敛结果。它不接受 `workflowId`，不调用 `WorkflowStore`，不创建 `EngineTracker`，也不执行候选方案。
+它只记录主 Agent 的收敛结果：
 
----
+- 只能选择当前 round 中真实存在的 proposal ID；
+- 拒绝空 ID、重复 ID 和跨 round ID；
+- 同一 round 的后续 selection 会作为新的 append-only 事件，读取时采用最新有效选择；
+- 不接受 workflowId，不调用 WorkflowStore，不创建 tracker，不执行候选方案。
 
-## 3. Scout 角色
+## 3. Scout 角色和报告约束
 
-角色只是搜索顺序偏好，不是硬分工：
+角色是搜索顺序偏好，不是硬分工：
 
 - `prior-first`：先看可选 advisory，再继续从零搜索；
 - `evidence-first`：先看代码、测试、错误和调用关系；
 - `alternative-first`：优先尝试不同的问题分解或证据路径；
 - `counterexample-first`：优先找前置条件、反例和兼容性风险。
 
-所有 Scout 都可以读取任何相关信息源，也都必须具备从零探索能力。
-
-报告禁止：
+所有 Scout 都可以读取任何相关信息源，也都必须具备从零探索能力。报告禁止：
 
 ```text
 best / rank / confidence / recommendation
 ```
 
----
+每个 Scout 受工具调用数、输出字符数、超时和取消信号约束。失败状态包括：
 
-## 4. 成本与取消
+- `completed`；
+- `timed_out`；
+- `aborted`；
+- `budget_exceeded`；
+- `parse_failed`；
+- `spawn_failed`。
+
+单个 Scout 失败不会阻塞主 Agent，也不会被当作任务完成。
+
+## 4. 持久化、replay 与任务隔离
+
+```text
+<explorationsRoot>/<project-key>/<安全编码后的-task-id>/
+  rounds.jl
+```
+
+`rounds.jl` 保持 append-only，包含两类事件：
+
+```json
+{"kind":"round","record":{...}}
+{"kind":"selection","roundId":"...","selection":{...}}
+```
+
+读取时会 replay 两类事件，形成 round view：
+
+- round 本身；
+- 最新有效 selection；
+- adopted proposal IDs；
+- combined plan summary；
+- skipped/invalid 行统计。
+
+因此 session 重启或重新 wire 后，可以恢复最近有效 round，并继续 `select_exploration`。损坏尾行、孤立 roundId、空 proposal ID 和不存在的 proposal 会被忽略并计入容错统计。selection 不会改写旧 round 行。
+
+任务目录由 project key 和安全编码后的 task ID 组成。task ID 缺失时会清空当前 journal、currentRound 和 user input，不会把新上下文写入旧任务。项目或 task 切换时会重新绑定对应目录。
+
+探索 journal 不是正式执行日志。它不会自动知道主 Agent 是否执行了 selection，也不会自动更新 `verifiedOutcome`。正式执行结果目前需要由其他插件或用户流程单独记录。
+
+## 5. 成本、配置与数据安全
 
 默认预算：
 
@@ -111,40 +151,32 @@ best / rank / confidence / recommendation
 }
 ```
 
-预算由程序强制执行。每个 Scout 可以返回：
+配置默认根目录为 `~/.pi/agent`；设置 `PI_CODING_AGENT_DIR` 后，settings 和默认 exploration 数据根目录改用该目录。`explorationsRoot` 支持 `~/...`，相对路径按 agent 目录解析。
 
-- `completed`；
-- `timed_out`；
-- `aborted`；
-- `budget_exceeded`；
-- `parse_failed`；
-- `spawn_failed`。
+示例：
 
-单个 Scout 失败不会阻塞主 Agent，也不会被当作任务完成。
-
----
-
-## 5. 独立数据位置
-
-```text
-~/.pi/agent/explorations/<project-key>/<task-id>/
-  rounds.jl       探索轮次和主 Agent 选择（append-only）
+```json
+{
+  "explorationScout": {
+    "enabled": true,
+    "explorationsRoot": "~/.pi/agent/explorations",
+    "policy": "explore-first",
+    "budget": {
+      "maxScouts": 3,
+      "maxRoundsPerTask": 2
+    }
+  }
+}
 ```
 
-每一轮记录：
+- `enabled`：是否加载插件；
+- `policy`：`explore-first` 或 `off`；
+- `budget`：覆盖默认探索预算；
+- `PI_EXPLORATION_DISABLE=1`：临时禁用插件。
 
-- TaskBrief；
-- Scout 模型、角色和状态；
-- 工具调用次数、耗时和输出上限；
-- optional prior 状态；
-- proposals、facts、negative evidence 和 unknowns；
-- `selectedProposalIds`；
-- 主 Agent 的组合概要；
-- 尚未验证的执行结果状态。
+`auxModel` 目前没有独立模型解析路径，即使配置存在，实际仍使用当前 session model，不应视为已生效能力。
 
-这些数据不是主 Agent 的正式执行日志。正式工具调用由其他插件或 Pi 自己处理。
-
----
+Scout 的子进程只读工作区，但报告、原始输出和 TaskBrief 仍可能包含项目敏感信息。`explorationsRoot` 不应放在共享目录；当前没有自动 retention、压缩或清理命令。
 
 ## 6. Optional prior
 
@@ -161,20 +193,16 @@ interface WorkflowPriorProvider {
 }
 ```
 
-没有 provider、没有匹配结果或 provider 失败时，Scout 自动从任务和仓库事实开始探索。
-
-命中的 prior 只是 advisory：
+没有 provider、没有匹配结果或 provider 失败时，Scout 自动从任务和仓库事实开始探索。命中的 prior 只是 advisory：
 
 - 不创建 tracker；
 - 不改变 workflow usage/evidence；
-- 不写 `workflowRef`；
+- 不写 workflowRef；
 - 不限制工具、目录、信息源或结论。
 
-默认没有 provider。未来若另一个插件提供它，也只能提供只读摘要，不能把探索选择变成工作流激活调用。
+默认没有 provider。未来即使由另一个插件提供，也不能把 exploration selection 变成 workflow activation。
 
----
-
-## 7. 与 journal-workflow 同时使用
+## 7. 与 journal-workflow 协作
 
 两个插件可以同时加载，但职责和存储完全分开：
 
@@ -186,7 +214,6 @@ interface WorkflowPriorProvider {
   },
   "explorationScout": {
     "enabled": true,
-    "explorationsRoot": "~/.pi/agent/explorations",
     "policy": "explore-first"
   }
 }
@@ -194,34 +221,62 @@ interface WorkflowPriorProvider {
 
 推荐组合：
 
-- 需要日志记忆时启用 `journal-workflow`；
-- 需要方案发散时启用 `exploration-scout`；
-- 两者可以同时启用；
-- 若工作流插件使用 `workflow-first`，它仍然只是自己的启动行为，不会改变探索插件的职责；
-- 若要避免工作流先验对主 Agent 形成启动锚定，可将 `workflowPolicy` 设为 `off`。
+- 需要方案发散时启用 exploration-scout；
+- 需要正式日志和 workflow guidance 时启用 journal-workflow；
+- 需要避免 workflow 先验对探索造成启动锚定时，可以将 workflow policy 设为 `off`；
+- selection 结果需要由主 Agent 带入正式执行；
+- 当前没有自动 `roundId → journal turn → verifiedOutcome` 关联协议。
 
-关闭本插件：
+禁用其中一个插件不会阻止另一个插件独立运行。
 
-```text
-PI_EXPLORATION_DISABLE=1
-```
+## 8. 排障
 
----
+1. `explore_space` 被拒绝：检查 TaskBrief 中是否包含方案性语言、round 是否重复、`maxRoundsPerTask` 是否已用尽。
+2. selection 无法继续：确认当前 task ID、`rounds.jl` 是否存在以及 proposal ID 是否属于最新 round；损坏或不匹配事件会被安全跳过。
+3. Scout 超时或预算超限：查看返回的 status，减少 `maxScouts`、`maxToolCallsPerScout` 或调整 focus。
+4. 找不到数据：检查 `PI_CODING_AGENT_DIR`、`explorationsRoot` 和 task/project identity；配置中的 `~` 会展开到 home 目录。
+5. 需要清理：停止任务后备份并删除目标 project/task 目录；当前没有自动 retention 命令。
 
-## 8. 开发与测试
+## 9. 开发与测试
 
 ```bash
 cd .pi/extensions/exploration-scout
-npx vitest run                 # 18 项通过
 npx tsc -p tsconfig.check.json # strict 类型检查
+npx vitest run                 # 18 项通过
 ```
 
 核心入口：
 
 ```text
-index.ts / adapter.ts  独立 Pi 生命周期和探索状态
-core/                  TaskBrief、角色、prior、报告和 packet
+index.ts / adapter.ts  生命周期、task identity 和 journal replay 恢复
+core/                  TaskBrief、角色、prior、报告、packet 和 journal state
 runner.ts              Scout 子进程、JSON 事件、预算和取消
-core/journal.ts        rounds.jl append-only 存储
 tool.ts                explore_space / select_exploration
 ```
+
+## 10. 已完成、部分可用与后续
+
+### 已完成
+
+- 中立 TaskBrief 与方案偏置检查；
+- 多 Scout、只读工具、预算、超时和取消；
+- round budget、focus 和 proposal 合法性校验；
+- append-only round/selection journal replay；
+- session/task 重启后的当前 round 恢复；
+- project/task 隔离和安全 task 路径；
+- optional prior 的 advisory 边界。
+
+### 部分可用
+
+- selection 已持久化并可恢复，但仍只是主 Agent 的声明；
+- `verifiedOutcome` 字段已保留，但正式执行不会自动回写；
+- 与 journal-workflow 可以并行使用，但没有强关联 ID；
+- 配置、数据和报告有基本边界，但没有自动清理和压缩。
+
+### 后续优先级
+
+1. 接入正式执行生命周期，记录 selected proposal 的实际 tool/turn 范围；
+2. 根据 journal 结果回写 `verifiedOutcome`、成功/失败证据和 adopted proposal；
+3. 建立可选的 exploration round 与 workflow/task 的关联协议，同时保持插件可独立运行；
+4. 自动触发 targeted round、风险反例探索和多轮结果比较；
+5. 独立 aux model、retention/清理和更完整的恢复审计。

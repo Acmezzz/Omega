@@ -3,7 +3,7 @@
  * half-line-tolerant reading. LLM patches are appended as separate lines
  * and merged by seq at read time; fact lines are never rewritten.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, appendFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import {
 	BLOCK_BYTE_LIMIT,
@@ -143,12 +143,15 @@ export class JournalWriter {
 		this.taskDir = taskDirOf(journalsRoot, projectKey, taskId);
 		mkdirSync(this.taskDir, { recursive: true });
 		const metaPath = join(this.taskDir, "task.json");
-		if (existsSync(metaPath)) {
-			this.meta = JSON.parse(readFileSync(metaPath, "utf-8")) as TaskMeta;
-			this.lastSeq = this.meta.turnCount;
-			this.turnsInCurrentBlock = this.meta.blocks.at(-1)
-				? this.meta.blocks.at(-1)!.toSeq - this.meta.blocks.at(-1)!.fromSeq + 1
-				: 0;
+			if (existsSync(metaPath)) {
+				this.meta = JSON.parse(readFileSync(metaPath, "utf-8")) as TaskMeta;
+				const recovered = readTask(this.taskDir);
+				const maxSeq = recovered.turns.reduce((max, turn) => Math.max(max, turn.seq), 0);
+				this.lastSeq = Math.max(this.meta.turnCount, maxSeq);
+				this.meta.turnCount = this.lastSeq;
+				this.turnsInCurrentBlock = this.meta.blocks.at(-1)
+					? this.meta.blocks.at(-1)!.toSeq - this.meta.blocks.at(-1)!.fromSeq + 1
+					: 0;
 		} else {
 			this.meta = {
 				taskId,
@@ -363,7 +366,7 @@ export class JournalWriter {
 		}
 		if (this.turnsInCurrentBlock >= BLOCK_TURN_LIMIT || bytes >= BLOCK_BYTE_LIMIT) {
 			const nextFile = `${String(this.meta.blocks.length + 1).padStart(4, "0")}.jl`;
-			this.meta.blocks.push({ file: nextFile, fromSeq: this.lastSeq, toSeq: this.lastSeq });
+				this.meta.blocks.push({ file: nextFile, fromSeq: this.lastSeq + 1, toSeq: this.lastSeq });
 			this.turnsInCurrentBlock = 0;
 		}
 	}
@@ -375,7 +378,10 @@ export class JournalWriter {
 	}
 
 	private writeMeta(): void {
-		writeFileSync(join(this.taskDir, "task.json"), `${JSON.stringify(this.meta, null, "\t")}\n`);
+		const target = join(this.taskDir, "task.json");
+		const temp = `${target}.tmp-${process.pid}`;
+		writeFileSync(temp, `${JSON.stringify(this.meta, null, "\t")}\n`);
+		renameSync(temp, target);
 	}
 
 	private finalizeTask(): void {

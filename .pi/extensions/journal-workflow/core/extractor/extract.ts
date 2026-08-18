@@ -7,7 +7,8 @@
  *  4. merge: similar → evidence++; new → probation entries
  *  5. failure replay: post-escape recovery paths → alternative suggestions
  */
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { JournalWriter, listTasks, readTask } from "../journal/writer.ts";
 import { BackupReader } from "../journal/backup.ts";
@@ -61,6 +62,14 @@ export interface ExtractOptions {
 	maxFragmentsPerRequest?: number;
 }
 
+interface ExtractionManifest {
+	version: 1;
+	projectKey: string;
+	inputHash: string;
+	tasks: Array<{ taskId: string; seqs: number[]; pending: number }>;
+	completedAt: string;
+}
+
 interface LoadedTask {
 	taskId: string;
 	turns: TurnRecord[];
@@ -75,6 +84,45 @@ interface FailureRecordShape {
 	stepIndex?: unknown;
 	expect?: unknown;
 	escapeReason?: unknown;
+}
+
+function manifestPath(workflowsRoot: string): string {
+	return join(workflowsRoot, ".extraction-manifest.json");
+}
+
+function inputManifest(projectKey: string, tasks: LoadedTask[]): ExtractionManifest {
+	const normalized = tasks.map((task) => ({
+		taskId: task.taskId,
+		seqs: task.turns.map((turn) => turn.seq),
+		pending: task.pendingDistill,
+		turns: task.turns.map((turn) => ({
+			seq: turn.seq,
+			userInput: turn.userInput,
+			outcome: turn.outcome,
+			extractedAt: turn.extractedAt ?? null,
+			tools: turn.toolCalls.map((call) => ({ tool: call.tool, status: call.status, workflowRef: call.workflowRef, refSequence: call.refSequence })),
+		})),
+	}));
+	const inputHash = createHash("sha256").update(JSON.stringify({ projectKey, tasks: normalized })).digest("hex");
+	return { version: 1, projectKey, inputHash, tasks: normalized.map(({ taskId, seqs, pending }) => ({ taskId, seqs, pending })), completedAt: "" };
+}
+
+function readManifest(workflowsRoot: string): ExtractionManifest | null {
+	const path = manifestPath(workflowsRoot);
+	if (!existsSync(path)) return null;
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as ExtractionManifest;
+		return parsed.version === 1 && typeof parsed.inputHash === "string" ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+function writeManifest(workflowsRoot: string, manifest: ExtractionManifest): void {
+	const path = manifestPath(workflowsRoot);
+	const temp = `${path}.tmp-${process.pid}`;
+	writeFileSync(temp, `${JSON.stringify(manifest, null, "\t")}\n`);
+	renameSync(temp, path);
 }
 
 function readFailureRecords(taskDir: string): Array<Record<string, unknown>> {
@@ -153,6 +201,15 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 
 	const tasks = loadTasks(opts.journalsRoot, opts.projectKey);
 	report.tasksScanned = tasks.length;
+	const manifest = inputManifest(opts.projectKey, tasks);
+	const manifestRoot = opts.store.root;
+	const previousManifest = readManifest(manifestRoot);
+	if (!opts.dryRun && previousManifest?.projectKey === manifest.projectKey && previousManifest.inputHash === manifest.inputHash) {
+		report.turnsPendingDistill = tasks.reduce((sum, task) => sum + task.pendingDistill, 0);
+		report.turnsDistilled = tasks.reduce((sum, task) => sum + task.turns.filter((turn) => turn.extractedAt !== undefined).length, 0);
+		report.completedTasks = tasks.filter((task) => task.outcome === "completed").length;
+		return report;
+	}
 	const catalogEntryIds = new Set<string>();
 
 	// ---- 0. Re-distill pending turns first (crash/timeout recovery) ----
@@ -428,5 +485,9 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 		}
 	}
 
+	if (!opts.dryRun) {
+		const finalTasks = loadTasks(opts.journalsRoot, opts.projectKey);
+		writeManifest(manifestRoot, { ...inputManifest(opts.projectKey, finalTasks), completedAt: new Date().toISOString() });
+	}
 	return report;
 }

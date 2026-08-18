@@ -87,6 +87,8 @@ export class WorkflowStore {
 		return new WorkflowStore(rootDir, [], { ...EMPTY_CATALOG, features: [] });
 	}
 
+	get root(): string { return this.rootDir; }
+
 	getRegistry(): RegistryEntry[] {
 		return [...this.entries];
 	}

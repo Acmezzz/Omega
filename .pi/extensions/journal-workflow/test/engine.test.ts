@@ -125,6 +125,16 @@ describe("E3: tracker state machine", () => {
 		expect((actions[0] as { message: string | null }).message).toContain("l1-locate-symbol");
 	});
 
+	it("restores a compatible tracker snapshot without restoring an incompatible one", () => {
+		const tracker = makeTracker([{ intent: "复现", action: { tool: "bash", argsTemplate: "x" }, expect: "y", retries: 2 }]);
+		tracker.recordToolCompletion("snapshot-call", "bash");
+		const restored = EngineTracker.fromSnapshot(tracker.toSnapshot(), [{ intent: "复现", action: { tool: "bash", argsTemplate: "x" }, expect: "y", retries: 2 }], { getL1: () => undefined });
+		expect(restored?.workflowId).toBe("l2-fix-failing-test");
+		expect(restored?.currentStepIndex).toBe(0);
+		expect(restored?.recordToolCompletion("snapshot-call", "bash").matched).toBe(false);
+		expect(EngineTracker.fromSnapshot(tracker.toSnapshot(), [], { getL1: () => undefined })).toBeNull();
+	});
+
 	it("null outcome keeps the checkpoint active", () => {
 			const tracker = makeTracker([{ intent: "复现", action: { tool: "bash", argsTemplate: "x" }, expect: "y", retries: 2 }]);
 			const actions = tracker.handleCheckpoint(null, "");

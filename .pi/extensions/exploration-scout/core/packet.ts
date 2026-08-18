@@ -113,6 +113,7 @@ export function renderPacketContent(round: number, prior: PriorResolution, runs:
 	return `${content}${footer}`.slice(0, maxChars);
 }
 
-export function makePacket(round: number, prior: PriorResolution, runs: ScoutRunRecord[], budget: ExplorationBudget): ExplorationPacket {
-	return { round, prior, runs, content: renderPacketContent(round, prior, runs, budget.maxPacketChars) };
+export function makePacket(round: number, prior: PriorResolution, runs: ScoutRunRecord[], budget: ExplorationBudget, focus?: string): ExplorationPacket {
+	const content = renderPacketContent(round, prior, runs, budget.maxPacketChars);
+	return focus?.trim() ? { round, prior, runs, content, focus: focus.trim() } : { round, prior, runs, content };
 }

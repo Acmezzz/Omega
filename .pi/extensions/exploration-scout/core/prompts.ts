@@ -26,8 +26,9 @@ export function renderPrior(prior: PriorResolution): string {
 	}
 }
 
-export function buildScoutPrompt(role: ScoutRole, brief: TaskBrief, prior: PriorResolution): string {
-	return `${SCOUT_COMMON_PROMPT}
+export function buildScoutPrompt(role: ScoutRole, brief: TaskBrief, prior: PriorResolution, focus?: string): string {
+	const focusText = focus?.trim() ? `\n本轮定向问题（仅作为待检验的搜索焦点，不是既定方案）：${focus.trim()}` : "";
+	return `${SCOUT_COMMON_PROMPT}${focusText}
 
 你的搜索偏好（软偏好，可随证据改变）：
 ${role.preference}

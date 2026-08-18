@@ -162,7 +162,12 @@ describe("X2: extraction pipeline over the session corpus", () => {
 			{ workflowId: "l2-fix-failing-test", stepIndex: 0, alternative: "l1-bash-grep" },
 		]);
 		expect(store.getL2("l2-fix-failing-test")!.steps[0].alternative).toBe("l1-bash-grep");
-	});
+
+			const evidenceAfter = store.getEntry("l1-locate-symbol")!.evidence;
+			const second = await runExtraction({ journalsRoot: join(root, "journals"), projectKey: CORPUS_PROJECT_KEY, store, llm: extractionRouterLlm() });
+			expect(second.mergedInto).toEqual([]);
+			expect(store.getEntry("l1-locate-symbol")!.evidence).toBe(evidenceAfter);
+		});
 
 	it("dryRun leaves the library untouched", async () => {
 		const workflowsRoot = join(root, "workflows-dry");
