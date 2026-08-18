@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BackupReader, BackupWriter } from "../core/journal/backup.ts";
+import { buildRestorePlan } from "../core/journal/restore.ts";
 import { truncateWithMeta } from "../core/journal/writer.ts";
 
 const roots: string[] = [];
@@ -45,6 +46,22 @@ describe("raw journal backup and fragments", () => {
 		expect(() => writer.reader().getFragments({ fragmentIds: [id] })).toThrow(/sensitive/);
 		expect(writer.reader({ allowSensitive: true }).getFragments({ fragmentIds: [id], allowSensitive: true })[0].text).toContain("secret");
 		expect(() => writer.reader({ allowSensitive: true }).getFragments({ fragmentIds: [id, "missing"], allowSensitive: true })).toThrow(/unknown/);
+	});
+
+	it("scans backup events and builds an idempotent restore plan", () => {
+		const root = mkdtempSync(join(tmpdir(), "jw-restore-"));
+		roots.push(root);
+		const writer = new BackupWriter(root, "project", "task", "session");
+		writer.appendEvent("user_message", { role: "user", content: "恢复任务" }, { turnSeq: 1 });
+		writer.appendEvent("turn_end", { message: { stopReason: "stop" } }, { turnSeq: 1 });
+		const reader = new BackupReader(writer.dir);
+		const plan = buildRestorePlan(reader.scanEvents(), "project", "task", new Set());
+		expect(plan.eventsValid).toBe(2);
+		expect(plan.turnsEligible).toBe(1);
+		expect(plan.turns[0].extractedAt).toBeUndefined();
+		const second = buildRestorePlan(reader.scanEvents(), "project", "task", new Set([1]));
+		expect(second.turnsEligible).toBe(0);
+		expect(second.status).toBe("no-op");
 	});
 
 	it("rebuilds a missing index and keeps head-tail truncation metadata", () => {

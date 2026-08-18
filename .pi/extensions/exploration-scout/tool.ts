@@ -19,6 +19,7 @@ export interface ExplorationToolDeps {
 	runScouts?: (options: Omit<ScoutRunOptions, "role"> & { roles: ScoutRole[] }) => Promise<ScoutRunRecord[]>;
 	onRound?: (input: { brief: TaskBrief; round: number; focus?: string; packet: ReturnType<typeof makePacket>; budget: ExplorationBudget }) => void;
 	onSelection?: (selection: ExplorationSelection, ctx: ExtensionContext) => string | void;
+	onSelectionEvent?: (event: { roundId: string; selectionId?: string; selection: ExplorationSelection }, ctx: ExtensionContext) => void;
 	getRounds?: () => ScoutRoundRecord[];
 	getCurrentRound?: () => ScoutRoundRecord | null;
 }
@@ -33,6 +34,14 @@ const exploreSchema = Type.Object({ taskBrief: briefSchema, round: Type.Optional
 const selectSchema = Type.Object({ selectedProposalIds: Type.Array(Type.String()), combinedPlanSummary: Type.Optional(Type.String()), reason: Type.Optional(Type.String()) });
 
 function mergedBudget(deps: ExplorationToolDeps): ExplorationBudget { return { ...DEFAULT_EXPLORATION_BUDGET, ...(deps.getBudget?.() ?? {}) }; }
+function cleanFocus(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const cleaned = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ").trim();
+	return cleaned ? cleaned.slice(0, 1_000) : undefined;
+}
+function makeSelectionId(): string {
+	return `selection-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 function modelShape(ctx: ExtensionContext): { provider?: string; id?: string } {
 	const model = ctx.model as { provider?: unknown; id?: unknown } | undefined;
 	return { provider: typeof model?.provider === "string" ? model.provider : undefined, id: typeof model?.id === "string" ? model.id : undefined };
@@ -53,10 +62,14 @@ export function createExploreSpaceTool(deps: ExplorationToolDeps) {
 			if (requestedRound > budget.maxRoundsPerTask || rounds.some((record) => record.packet.round === requestedRound)) {
 				return { content: [{ type: "text", text: `探索轮次 ${requestedRound} 已达到任务预算或已经执行过。` }], details: { status: "round_budget_exceeded", round: requestedRound } };
 			}
-			const brief = { ...validation.brief, rawUserInput: deps.getCurrentUserInput?.() ?? validation.brief.rawUserInput };
-			const prior = await resolvePrior(brief.rawUserInput, deps.priorProvider);
-			const roles = selectScoutRoles(budget.maxScouts, params.includeCounterexample === true);
-				const focus = typeof params.focus === "string" && params.focus.trim() ? params.focus.trim() : undefined;
+				const candidateBrief = { ...validation.brief, rawUserInput: deps.getCurrentUserInput?.() ?? validation.brief.rawUserInput };
+				const finalValidation = validateTaskBrief(candidateBrief);
+				if (!finalValidation.valid || !finalValidation.brief) return { content: [{ type: "text", text: `TaskBrief 无效：${finalValidation.reasons.join("；")}` }], details: { status: "invalid_brief", reasons: finalValidation.reasons } };
+				const brief = finalValidation.brief;
+				const prior = await resolvePrior(brief.rawUserInput, deps.priorProvider);
+				const rotationSeed = requestedRound + brief.rawUserInput.length;
+				const roles = selectScoutRoles(budget.maxScouts, params.includeCounterexample === true, rotationSeed);
+					const focus = cleanFocus(params.focus);
 				const runs = await (deps.runScouts ?? runScouts)({ cwd: ctx.cwd, model: modelShape(ctx), brief, prior, budget, focus, signal, roles });
 				const packet = makePacket(params.round ?? 1, prior, runs, budget, focus);
 				deps.onRound?.({ brief, round: params.round ?? 1, focus, packet, budget });
@@ -77,9 +90,10 @@ export function createSelectExplorationTool(deps: ExplorationToolDeps) {
 			const proposalIds = new Set(currentRound.packet.runs.flatMap((run) => run.report?.proposals.map((proposal) => proposal.id) ?? []));
 				const selected = [...new Set(params.selectedProposalIds)];
 				if (selected.length !== params.selectedProposalIds.length || selected.some((id) => !id.trim() || !proposalIds.has(id))) return { content: [{ type: "text", text: "选择中包含重复、空白或当前轮次不存在的 proposal ID。" }], details: { status: "invalid_selection" } };
-			const selection: ExplorationSelection = { selectedProposalIds: selected, combinedPlanSummary: params.combinedPlanSummary ?? null, reason: params.reason ?? null };
-			const selectionMessage = deps.onSelection?.(selection, ctx);
-			return { content: [{ type: "text", text: selectionMessage ?? "已记录探索收敛结果。现在请由主 Agent 正式执行并用外部结果验证。" }], details: { selection } };
+				const selection: ExplorationSelection = { selectionId: makeSelectionId(), selectedProposalIds: selected, combinedPlanSummary: params.combinedPlanSummary ?? null, reason: params.reason ?? null };
+				const selectionMessage = deps.onSelection?.(selection, ctx);
+				deps.onSelectionEvent?.({ roundId: currentRound.roundId, selectionId: selection.selectionId, selection }, ctx);
+				return { content: [{ type: "text", text: selectionMessage ?? "已记录探索收敛结果。现在请由主 Agent 正式执行并用外部结果验证。" }], details: { selection } };
 		},
 	});
 }

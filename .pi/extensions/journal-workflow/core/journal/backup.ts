@@ -54,6 +54,13 @@ export interface BackupAppendResult {
 	fragmentIds: Record<string, string[]>;
 }
 
+export interface BackupEventScan {
+	events: BackupEvent[];
+	skippedLines: number;
+	duplicateSeqs: number[];
+	outOfOrder: boolean;
+}
+
 export interface FragmentRequest {
 	fragmentIds: string[];
 	maxChars?: number;
@@ -253,6 +260,30 @@ export class BackupReader {
 		}
 		this.index = index;
 		for (const record of readJsonLines<FragmentRecord>(join(dir, "fragments.jl"))) this.fragments.set(record.fragmentId, record);
+	}
+
+	scanEvents(): BackupEventScan {
+		const eventsPath = join(this.dir, "events.jl");
+		const events: BackupEvent[] = [];
+		let skippedLines = 0;
+		let outOfOrder = false;
+		const duplicates: number[] = [];
+		const seen = new Set<number>();
+		if (existsSync(eventsPath)) {
+			let previous = 0;
+			for (const line of readFileSync(eventsPath, "utf8").split("\n").filter(Boolean)) {
+				try {
+					const event = JSON.parse(line) as BackupEvent;
+					if (event.kind !== "event" || typeof event.eventSeq !== "number") { skippedLines += 1; continue; }
+					if (seen.has(event.eventSeq)) duplicates.push(event.eventSeq);
+					if (event.eventSeq < previous) outOfOrder = true;
+					seen.add(event.eventSeq);
+					previous = event.eventSeq;
+					events.push(event);
+				} catch { skippedLines += 1; }
+			}
+		}
+		return { events, skippedLines, duplicateSeqs: [...new Set(duplicates)], outOfOrder };
 	}
 
 	listFragments(): FragmentIndexEntry[] {

@@ -2,7 +2,7 @@
  * X1/X2: segmentation & co-occurrence mining (X1) and the extraction
  * pipeline over the session corpus (X2), with a routing fake LLM.
  */
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,6 +167,10 @@ describe("X2: extraction pipeline over the session corpus", () => {
 			const second = await runExtraction({ journalsRoot: join(root, "journals"), projectKey: CORPUS_PROJECT_KEY, store, llm: extractionRouterLlm() });
 			expect(second.mergedInto).toEqual([]);
 			expect(store.getEntry("l1-locate-symbol")!.evidence).toBe(evidenceAfter);
+			const manifestPath = join(workflowsRoot, "manifests", `${CORPUS_PROJECT_KEY}.json`);
+			expect(existsSync(manifestPath)).toBe(true);
+			expect(JSON.parse(readFileSync(manifestPath, "utf8")).version).toBe(2);
+			expect(existsSync(join(workflowsRoot, ".extraction-manifest.json"))).toBe(false);
 		});
 
 	it("dryRun leaves the library untouched", async () => {

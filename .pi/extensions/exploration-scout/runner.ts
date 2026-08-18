@@ -35,6 +35,7 @@ interface ChildResult {
 	output: string;
 	stderr: string;
 	toolCallCount: number;
+	toolNames: string[];
 	aborted: boolean;
 	timedOut: boolean;
 	budgetExceeded: boolean;
@@ -71,11 +72,16 @@ async function writePrompt(prompt: string): Promise<{ dir: string; file: string 
 	return { dir, file };
 }
 
-function consumeJsonLine(line: string, state: { output: string; toolCallCount: number }): void {
-	if (!line.trim()) return;
+const ALLOWED_TOOLS = ["read", "grep", "find", "ls"] as const;
+
+function consumeJsonLine(line: string, state: { output: string; toolCallCount: number; toolNames: Set<string> }): void {
+		if (!line.trim()) return;
 	try {
-		const event = JSON.parse(line) as Record<string, unknown>;
-		if (event.type === "tool_execution_start") state.toolCallCount += 1;
+			const event = JSON.parse(line) as Record<string, unknown>;
+			if (event.type === "tool_execution_start") {
+				state.toolCallCount += 1;
+				if (typeof event.toolName === "string") state.toolNames.add(event.toolName);
+			}
 		if (event.type === "message_end") {
 			const message = event.message as { role?: string; content?: unknown } | undefined;
 			if (message?.role === "assistant" && Array.isArray(message.content)) {
@@ -111,7 +117,7 @@ function runChild(
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-		const state = { output: "", toolCallCount: 0 };
+			const state = { output: "", toolCallCount: 0, toolNames: new Set<string>() };
 		let buffer = "";
 		let stderr = "";
 		let finished = false;
@@ -127,7 +133,7 @@ function runChild(
 			if (timer) clearTimeout(timer);
 			if (abortHandler && signal) signal.removeEventListener("abort", abortHandler);
 				if (buffer.trim()) consumeJsonLine(buffer, state);
-				resolve({ exitCode, output: state.output, stderr, toolCallCount: state.toolCallCount, aborted: wasAborted, timedOut, budgetExceeded });
+					resolve({ exitCode, output: state.output, stderr, toolCallCount: state.toolCallCount, toolNames: [...state.toolNames], aborted: wasAborted, timedOut, budgetExceeded });
 			};
 			const stop = (kind: "abort" | "timeout" | "budget"): void => {
 				if (kind === "abort") wasAborted = true;
@@ -149,7 +155,7 @@ function runChild(
 			buffer = lines.pop() ?? "";
 			for (const line of lines) {
 				consumeJsonLine(line, state);
-				if (state.toolCallCount > budget.maxToolCallsPerScout) {
+					if (state.toolCallCount >= budget.maxToolCallsPerScout) {
 					stop("budget");
 					return;
 				}
@@ -175,14 +181,16 @@ function runChild(
 
 export async function runScout(options: ScoutRunOptions): Promise<ScoutRunRecord> {
 	const started = Date.now();
-	const priorStatus = options.prior.kind;
 	let promptFile: { dir: string; file: string } | undefined;
 	try {
-		promptFile = await writePrompt(buildScoutPrompt(options.role, options.brief, options.prior, options.focus));
-		const args = ["--mode", "json", "--no-session", "--thinking", "low", "--tools", "read,grep,find,ls"];
-		const ref = modelRef(options.model);
-		if (ref) args.push("--model", ref);
-		args.push("--append-system-prompt", promptFile.file, "-p", options.brief.rawUserInput);
+		const exposedFocus = options.role.contextExposure === "focus" ? options.focus : undefined;
+		const exposedPrior = options.role.contextExposure === "prior" ? options.prior : { kind: "none", reason: "详情对本 Scout 隐藏" } as PriorResolution;
+		const exposedPriorStatus = exposedPrior.kind;
+		promptFile = await writePrompt(buildScoutPrompt(options.role, options.brief, exposedPrior, exposedFocus));
+			const args = ["--mode", "json", "--no-session", "--thinking", "low", "--tools", ALLOWED_TOOLS.join(",")];
+			const ref = modelRef(options.model);
+			if (ref) args.push("--model", ref);
+			args.push("--append-system-prompt", promptFile.file, "-p", "开始一次有限的、只读的、开放式探索；根据 system 中的 TaskBrief 独立搜索并返回 JSON 报告。");
 			const child = await runChild(args, options.cwd, options.budget, options.signal, options.spawn);
 			const cappedOutput = child.output.slice(0, options.budget.maxScoutOutputChars);
 			let status: ScoutRunRecord["status"] = "completed";
@@ -190,28 +198,38 @@ export async function runScout(options: ScoutRunOptions): Promise<ScoutRunRecord
 			else if (child.aborted) status = "aborted";
 			else if (child.budgetExceeded) status = "budget_exceeded";
 			else if (child.exitCode !== 0 && !cappedOutput) status = "spawn_failed";
-		const report: ScoutReport | null = status === "completed" ? parseScoutReport(cappedOutput, options.role.id, options.role.id, priorStatus) : null;
+			const report: ScoutReport | null = status === "completed" ? parseScoutReport(cappedOutput, options.role.id, options.role.id, exposedPriorStatus, options.budget.maxProposalsPerScout) : null;
 		if (status === "completed" && !report) status = "parse_failed";
-		return {
-			scoutId: options.role.id,
-			angle: options.role.id,
-			status,
-			toolCallCount: child.toolCallCount,
-			durationMs: Date.now() - started,
-			report,
-			rawOutput: cappedOutput || undefined,
-			error: child.stderr || undefined,
-		};
+			return {
+				scoutId: options.role.id,
+				angle: options.role.id,
+				bias: options.role.bias,
+				searchPolicy: options.role.searchPolicy,
+				allowedTools: [...ALLOWED_TOOLS],
+				contextExposure: options.role.contextExposure === "focus" && options.focus?.trim() ? "focus" : options.role.contextExposure === "prior" && options.prior.kind === "matched" ? "prior" : "blind",
+				status,
+				toolCallCount: child.toolCallCount,
+				durationMs: Date.now() - started,
+				reportedToolNames: child.toolNames,
+				report,
+				rawOutput: cappedOutput || undefined,
+				error: child.stderr || undefined,
+			};
 	} catch (error) {
-		return {
-			scoutId: options.role.id,
-			angle: options.role.id,
-			status: options.signal?.aborted ? "aborted" : "spawn_failed",
-			toolCallCount: 0,
-			durationMs: Date.now() - started,
-			report: null,
-			error: error instanceof Error ? error.message : String(error),
-		};
+			return {
+				scoutId: options.role.id,
+				angle: options.role.id,
+				bias: options.role.bias,
+				searchPolicy: options.role.searchPolicy,
+				allowedTools: [...ALLOWED_TOOLS],
+				contextExposure: "blind",
+				status: options.signal?.aborted ? "aborted" : "spawn_failed",
+				toolCallCount: 0,
+				durationMs: Date.now() - started,
+				reportedToolNames: [],
+				report: null,
+				error: error instanceof Error ? error.message : String(error),
+			};
 	} finally {
 		if (promptFile) {
 			await fs.promises.rm(promptFile.dir, { recursive: true, force: true }).catch(() => undefined);

@@ -11,8 +11,11 @@ export interface WorkflowPriorProvider {
 }
 
 export interface ExplorationSelectionEvent {
+	projectKey?: string;
 	taskId: string;
 	roundId: string;
+	selectionId: string;
 	selectedProposalIds: string[];
 	combinedPlanSummary: string | null;
+	reason?: string | null;
 }

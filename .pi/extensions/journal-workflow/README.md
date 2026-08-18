@@ -102,7 +102,7 @@ tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移�
 
 备份写入 user、assistant、tool、session 等扩展实际收到的 payload。提炼模型只能先看到受控 journal 和当前 turn 的可用 fragment 摘要；它若返回 `needs`，系统只允许读取白名单 fragment ID，并应用敏感权限、数量和字符预算。
 
-当前提供的是内部读取和按需补片能力，**没有面向用户的 backup restore/replay 命令**。异常退出时，已写入 backup 的事件不会自动重建为 journal turn；未到 `agent_settled` 或 `session_shutdown` 的内存 current turn 可能只存在于 backup，需后续恢复工具处理。
+当前同时提供内部按需补片能力和面向用户的 `/journal-restore` 恢复命令。异常退出时，已写入 backup 的事件不会自动重建为 journal turn；未到 `agent_settled` 或 `session_shutdown` 的内存 current turn 可能只存在于 backup。恢复命令默认 dry-run，显式 `--apply` 后才以 append-only 方式补写事实回合。
 
 ### 一致性边界
 
@@ -123,6 +123,8 @@ tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移�
 | `/wf-list` | 查看 registry、level、状态、evidence、usage 和 escapes |
 | `/wf-catalog` | 查看抽象功能类别及其成员 |
 | `/wf-stats` | 查看项目任务、回合、待提炼数量和 escape 记录 |
+| `/journal-restore <task-id> [--dry-run\|--apply]` | 从 backup 事件恢复尚未落盘的事实回合，默认 dry-run |
+| `/wf-health [task-id] [--json]` | 只读检查 journal、backup、workflow 和 extraction 数据健康状态 |
 
 推荐循环：
 
@@ -130,13 +132,18 @@ tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移�
 正式执行 → journal 记录 → /wf-extract → 工作流/目录演进 → 后续任务得到 guidance
 ```
 
+`/journal-restore` 只把已成功写入 backup 的事件恢复为 append-only fact turns；不恢复 workflowRef、tracker、failures、registry evidence、LLM patch 或 entry IDs。默认 dry-run，显式 `--apply` 才写入；重复 apply 对已有 turn seq 返回 no-op。恢复后的回合保持 pending distill，由 `/wf-extract` 处理。
+
+`/wf-health` 是只读检查，不自动 repair/cleanup；报告只输出状态、计数、路径和错误码，不输出 payload、正文或 thinking。
+
 `/wf-extract` 会把当前项目任务的 task/seq 输入摘要保存到：
 
 ```text
-<workflowsRoot>/.extraction-manifest.json
+<workflowsRoot>/manifests/<projectKey>.json
+<workflowsRoot>/.evidence-ledger.json
 ```
 
-同一 project、同一批 task/seq 和同一提炼状态再次执行时会返回 no-op，避免重复增加 evidence。出现新回合、pending turn 状态变化或输入摘要变化后才重新运行。这个水位是**同一输入去重**，不是完整事务回滚；registry、实体和 catalog 的多文件提交仍可能在进程崩溃时处于部分完成状态。`--dry-run`/测试调用仍会计算候选，但不会写库或 manifest。
+manifest 当前为 version 2，记录 pipeline/schema/model/registry/catalog fingerprint。同一 project、同一批 task/seq、相同 fingerprint 和同一提炼状态再次执行时会返回 no-op；即使候选计算因新批次或版本变化重新运行，evidence ledger 也会按稳定 evidence key 防止同一来源重复计数。出现新回合、pending turn 状态变化或输入摘要变化后才重新运行。这个水位是**同一输入去重**，不是完整事务回滚；registry、实体和 catalog 的多文件提交仍可能在进程崩溃时处于部分完成状态。`--dry-run`/测试调用仍会计算候选，但不会写库或 manifest。
 
 提取恢复已有一个基础路径：`/wf-extract` 首先重新提炼 `extractedAt` 缺失的 turn。离线补提炼目前不自动重建前序 `PrevTurnContext`，因此跨回合语义可能比在线提炼更弱。
 
@@ -220,7 +227,7 @@ PI_CODING_AGENT_DIR=/path/to/agent
 ```bash
 cd .pi/extensions/journal-workflow
 npx tsc -p tsconfig.check.json # strict 类型检查
-npx vitest run                 # 51 项通过，3 项 live 测试按条件跳过
+npx vitest run                 # 56 项通过，3 项 live 测试按条件跳过
 ```
 
 核心入口：

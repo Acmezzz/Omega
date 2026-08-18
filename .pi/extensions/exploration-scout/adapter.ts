@@ -92,12 +92,12 @@ export function wire(pi: ExtensionAPI, deps: ScoutWireDeps): void {
 				journal.appendRound(record);
 				currentRound = { ...record, selection: null };
 			},
-			onSelection: (selection: ExplorationSelection) => {
-				if (currentRound && journal) {
-					journal.appendSelection(currentRound.roundId, selection);
-					currentRound = { ...currentRound, selection, adoptedProposalIds: selection.selectedProposalIds, ...(selection.combinedPlanSummary ? { combinedPlanSummary: selection.combinedPlanSummary } : {}) };
-				}
-			return "已记录探索收敛结果。现在请由主 Agent 正式执行并用外部结果验证；探索插件不会执行任务或激活工作流。";
-		},
+				onSelection: (selection: ExplorationSelection) => {
+					if (currentRound && journal) {
+						selection.selectionId = journal.appendSelection(currentRound.roundId, selection);
+						currentRound = { ...currentRound, selection, adoptedProposalIds: selection.selectedProposalIds, ...(selection.combinedPlanSummary ? { combinedPlanSummary: selection.combinedPlanSummary } : {}) };
+					}
+				return "已记录探索收敛结果。现在请由主 Agent 正式执行并用外部结果验证；探索插件不会执行任务或激活工作流。";
+			},
 	});
 }

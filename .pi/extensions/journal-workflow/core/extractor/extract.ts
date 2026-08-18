@@ -8,7 +8,7 @@
  *  5. failure replay: post-escape recovery paths → alternative suggestions
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { JournalWriter, listTasks, readTask } from "../journal/writer.ts";
 import { BackupReader } from "../journal/backup.ts";
@@ -19,13 +19,18 @@ import type { WorkflowStore } from "../library/store.ts";
 import type { CatalogFeature, L1Template, L2Workflow, Step } from "../library/types.ts";
 import { alignSkeletons, findRecurringPatterns, toolSequenceOfTurn } from "./segment.ts";
 import {
+		ALTERNATIVE_SYSTEM_PROMPT,
+		JUDGE_SYSTEM_PROMPT,
+		MATCH_EXISTING_CATALOG_SYSTEM_PROMPT,
+		PROPOSE_L1_SYSTEM_PROMPT,
+		PROPOSE_NEW_CATALOG_SYSTEM_PROMPT,
+		PROPOSE_SYSTEM_PROMPT,
 		judgeSimilarity,
 		matchExistingCatalog,
 		proposeAlternative,
 		proposeNewCatalog,
-
-	proposeL1,
-	proposeWorkflow,
+		proposeL1,
+		proposeWorkflow,
 	type ProposedL2,
 	type TaskSummaryForProposal,
 } from "./pack.ts";
@@ -60,12 +65,17 @@ export interface ExtractOptions {
 	allowSensitiveFragments?: boolean;
 	maxFragmentCharsPerRequest?: number;
 	maxFragmentsPerRequest?: number;
+	modelFingerprint?: string;
 }
 
+const EXTRACTION_PIPELINE_VERSION = "2";
+const EXTRACTION_SCHEMA_VERSION = "2";
+
 interface ExtractionManifest {
-	version: 1;
+	version: 2;
 	projectKey: string;
 	inputHash: string;
+	fingerprints: { pipeline: string; prompt: string; schema: string; model: string; registry: string; catalog: string };
 	tasks: Array<{ taskId: string; seqs: number[]; pending: number }>;
 	completedAt: string;
 }
@@ -78,6 +88,16 @@ interface LoadedTask {
 	failures: Array<Record<string, unknown>>;
 }
 
+interface DistilledTurn {
+	taskId: string;
+	turn: TurnRecord;
+}
+
+interface SourceTurnRef {
+	taskId: string;
+	turnSeq: number;
+}
+
 interface FailureRecordShape {
 	timestamp?: unknown;
 	workflowId?: unknown;
@@ -86,11 +106,11 @@ interface FailureRecordShape {
 	escapeReason?: unknown;
 }
 
-function manifestPath(workflowsRoot: string): string {
-	return join(workflowsRoot, ".extraction-manifest.json");
+function manifestPath(workflowsRoot: string, projectKey: string): string {
+	return join(workflowsRoot, "manifests", `${projectKey}.json`);
 }
 
-function inputManifest(projectKey: string, tasks: LoadedTask[]): ExtractionManifest {
+function inputManifest(projectKey: string, tasks: LoadedTask[], store: WorkflowStore, modelFingerprint = "unknown"): ExtractionManifest {
 	const normalized = tasks.map((task) => ({
 		taskId: task.taskId,
 		seqs: task.turns.map((turn) => turn.seq),
@@ -104,22 +124,36 @@ function inputManifest(projectKey: string, tasks: LoadedTask[]): ExtractionManif
 		})),
 	}));
 	const inputHash = createHash("sha256").update(JSON.stringify({ projectKey, tasks: normalized })).digest("hex");
-	return { version: 1, projectKey, inputHash, tasks: normalized.map(({ taskId, seqs, pending }) => ({ taskId, seqs, pending })), completedAt: "" };
+	const registryFingerprint = createHash("sha256").update(JSON.stringify(store.getRegistry().map(({ id, level, intent, excludes, status }) => ({ id, level, intent, excludes, status })).sort((a, b) => a.id.localeCompare(b.id)))).digest("hex");
+	const catalogFingerprint = createHash("sha256").update(JSON.stringify(store.getCatalog().features.map(({ id, label, description, aliases }) => ({ id, label, description, aliases })).sort((a, b) => a.id.localeCompare(b.id)))).digest("hex");
+	const promptFingerprint = createHash("sha256")
+		.update([
+			PROPOSE_SYSTEM_PROMPT,
+			PROPOSE_L1_SYSTEM_PROMPT,
+			JUDGE_SYSTEM_PROMPT,
+			ALTERNATIVE_SYSTEM_PROMPT,
+			MATCH_EXISTING_CATALOG_SYSTEM_PROMPT,
+			PROPOSE_NEW_CATALOG_SYSTEM_PROMPT,
+		].join("\n\n"))
+		.digest("hex");
+	return { version: 2, projectKey, inputHash, fingerprints: { pipeline: EXTRACTION_PIPELINE_VERSION, prompt: promptFingerprint, schema: EXTRACTION_SCHEMA_VERSION, model: modelFingerprint, registry: registryFingerprint, catalog: catalogFingerprint }, tasks: normalized.map(({ taskId, seqs, pending }) => ({ taskId, seqs, pending })), completedAt: "" };
 }
 
-function readManifest(workflowsRoot: string): ExtractionManifest | null {
-	const path = manifestPath(workflowsRoot);
+function readManifest(workflowsRoot: string, projectKey: string): ExtractionManifest | null {
+	const path = manifestPath(workflowsRoot, projectKey);
 	if (!existsSync(path)) return null;
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as ExtractionManifest;
-		return parsed.version === 1 && typeof parsed.inputHash === "string" ? parsed : null;
+		return parsed.version === 2 && typeof parsed.inputHash === "string" && !!parsed.fingerprints ? parsed : null;
 	} catch {
 		return null;
 	}
 }
 
 function writeManifest(workflowsRoot: string, manifest: ExtractionManifest): void {
-	const path = manifestPath(workflowsRoot);
+	const path = manifestPath(workflowsRoot, manifest.projectKey);
+	// The manifest is per project so one project cannot suppress another project's extraction.
+	mkdirSync(join(workflowsRoot, "manifests"), { recursive: true });
 	const temp = `${path}.tmp-${process.pid}`;
 	writeFileSync(temp, `${JSON.stringify(manifest, null, "\t")}\n`);
 	renameSync(temp, path);
@@ -170,6 +204,28 @@ function containsSubsequence(seq: string[], pattern: string[]): boolean {
 	return idx === pattern.length;
 }
 
+function candidateFingerprint(candidate: unknown): string {
+	return createHash("sha256").update(JSON.stringify(candidate)).digest("hex").slice(0, 32);
+}
+
+function sourceRefKey(ref: SourceTurnRef): string {
+	return `${ref.taskId}:${ref.turnSeq}`;
+}
+
+function sourceRefsKey(refs: SourceTurnRef[]): string {
+	return [...new Set(refs.map(sourceRefKey))].sort().join(",") || "unknown";
+}
+
+function extractionEvidenceKey(
+	projectKey: string,
+	kind: "pattern" | "skeleton",
+	level: 1 | 2,
+	refs: SourceTurnRef[],
+	candidate: unknown,
+): string {
+	return `extract:${projectKey}:${kind}:L${level}:${sourceRefsKey(refs)}:${candidateFingerprint(candidate)}`;
+}
+
 function stepsFromProposal(proposed: ProposedL2): Step[] {
 	return proposed.steps.map((s) => ({
 		intent: s.intent,
@@ -201,10 +257,11 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 
 	const tasks = loadTasks(opts.journalsRoot, opts.projectKey);
 	report.tasksScanned = tasks.length;
-	const manifest = inputManifest(opts.projectKey, tasks);
+	const modelFingerprint = opts.modelFingerprint ?? "unknown";
+	const manifest = inputManifest(opts.projectKey, tasks, opts.store, modelFingerprint);
 	const manifestRoot = opts.store.root;
-	const previousManifest = readManifest(manifestRoot);
-	if (!opts.dryRun && previousManifest?.projectKey === manifest.projectKey && previousManifest.inputHash === manifest.inputHash) {
+	const previousManifest = readManifest(manifestRoot, opts.projectKey);
+	if (!opts.dryRun && previousManifest?.projectKey === manifest.projectKey && previousManifest.inputHash === manifest.inputHash && JSON.stringify(previousManifest.fingerprints) === JSON.stringify(manifest.fingerprints)) {
 		report.turnsPendingDistill = tasks.reduce((sum, task) => sum + task.pendingDistill, 0);
 		report.turnsDistilled = tasks.reduce((sum, task) => sum + task.turns.filter((turn) => turn.extractedAt !== undefined).length, 0);
 		report.completedTasks = tasks.filter((task) => task.outcome === "completed").length;
@@ -261,11 +318,11 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 		tasks.push(...loadTasks(opts.journalsRoot, opts.projectKey));
 	}
 
-	const distilledTurns: TurnRecord[] = [];
+	const distilledTurns: DistilledTurn[] = [];
 	for (const task of tasks) {
 		report.turnsPendingDistill += task.pendingDistill;
 		for (const turn of task.turns) {
-			if (turn.extractedAt !== undefined) distilledTurns.push(turn);
+			if (turn.extractedAt !== undefined) distilledTurns.push({ taskId: task.taskId, turn });
 		}
 	}
 	report.turnsDistilled = distilledTurns.length;
@@ -278,19 +335,28 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 	report.completedTasks = completedTasks.length;
 
 	// ---- 1. Cross-task recurring tool patterns → L1 candidates ----
-	const allSequences = distilledTurns.map(toolSequenceOfTurn).filter((s) => s.length > 0);
+	const allSequences = distilledTurns.map(({ turn }) => toolSequenceOfTurn(turn)).filter((s) => s.length > 0);
 	const patterns = findRecurringPatterns(allSequences, 2, minCoOccurrence);
 	report.recurringPatterns = patterns;
 	for (const pattern of patterns) {
-		const exampleTasks = distilledTurns
-			.filter((turn) => containsSubsequence(toolSequenceOfTurn(turn), pattern.tools))
-			.slice(0, 5)
-			.map((turn) => turn.userInput);
+		const matchingTurns = distilledTurns.filter(({ turn }) => containsSubsequence(toolSequenceOfTurn(turn), pattern.tools));
+		const exampleTasks = matchingTurns.slice(0, 5).map(({ turn }) => turn.userInput);
+		const sourceRefs = matchingTurns.map(({ taskId, turn }) => ({ taskId, turnSeq: turn.seq }));
 		const proposed = await proposeL1(pattern, exampleTasks, opts.llm);
 		if (!proposed) continue;
-			const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm, 1);
-			if (similarTo) {
-				const merged = opts.dryRun ? opts.store.getEntry(similarTo) : opts.store.mergeInto({ ...proposed, variants: [] } as unknown as L1Template, similarTo, 1);
+		const evidenceKey = extractionEvidenceKey(opts.projectKey, "pattern", 1, sourceRefs, {
+			tools: pattern.tools,
+			candidate: proposed,
+		});
+		const source = {
+			kind: "pattern",
+			projectKey: opts.projectKey,
+			tools: pattern.tools,
+			sourceTurns: sourceRefs,
+		};
+		const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm, 1);
+		if (similarTo) {
+			const merged = opts.dryRun ? opts.store.getEntry(similarTo) : opts.store.mergeInto({ ...proposed, variants: [] } as unknown as L1Template, similarTo, 1, { evidenceKey, source, provenance: { pipeline: EXTRACTION_PIPELINE_VERSION, schema: EXTRACTION_SCHEMA_VERSION, model: opts.modelFingerprint ?? "unknown" } });
 				if (merged) {
 					report.mergedInto.push(similarTo);
 					catalogEntryIds.add(similarTo);
@@ -298,16 +364,16 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 				}
 			}
 
-			if (!opts.dryRun) {
-				const entity: L1Template = {
-					id: proposed.id,
-					intent: proposed.intent,
-					calls: proposed.calls,
-					expect: proposed.expect ?? undefined,
-					variants: [],
-				};
-				opts.store.upsertEntity(entity, 1);
-			}
+		if (!opts.dryRun) {
+			const entity: L1Template = {
+				id: proposed.id,
+				intent: proposed.intent,
+				calls: proposed.calls,
+				expect: proposed.expect ?? undefined,
+				variants: [],
+			};
+			opts.store.upsertEntity(entity, 1, { evidenceKey, source, provenance: { pipeline: EXTRACTION_PIPELINE_VERSION, schema: EXTRACTION_SCHEMA_VERSION, model: opts.modelFingerprint ?? "unknown" } });
+		}
 			catalogEntryIds.add(proposed.id);
 			report.l1Created.push(proposed.id);
 
@@ -317,11 +383,12 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 	// Skeletons come from FREE-MODE completed turns only: workflow-guided turns
 	// follow a template by construction and would pollute the native pattern
 	// (their value is consumed by failure replay below).
-	const completedSequences = completedTasks.flatMap((t) =>
-		t.turns
+		const completedTurnRefs = completedTasks.flatMap((task) =>
+			task.turns
 			.filter((turn) => turn.outcome === "completed" && turn.toolCalls.length > 0 && turnWorkflowRef(turn) === null)
-			.map(toolSequenceOfTurn),
-	);
+			.map((turn) => ({ taskId: task.taskId, turn })),
+		);
+		const completedSequences = completedTurnRefs.map(({ turn }) => toolSequenceOfTurn(turn));
 	if (completedSequences.length >= 2) {
 		const skeleton = alignSkeletons(completedSequences);
 		report.skeleton = skeleton;
@@ -339,31 +406,41 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 						tools: toolSequenceOfTurn(turn),
 					})),
 			}));
-			const proposed: ProposedL2 | null = await proposeWorkflow(summaries, opts.llm);
-			if (proposed) {
-					const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm, 2);
-					const entity: L2Workflow = {
+		const proposed: ProposedL2 | null = await proposeWorkflow(summaries, opts.llm);
+		if (proposed) {
+			const skeletonRefs = completedTurnRefs.map(({ taskId, turn }) => ({ taskId, turnSeq: turn.seq }));
+			const evidenceKey = extractionEvidenceKey(opts.projectKey, "skeleton", 2, skeletonRefs, {
+				skeleton,
+				candidate: proposed,
+			});
+			const source = {
+				kind: "skeleton",
+				projectKey: opts.projectKey,
+				sourceTurns: skeletonRefs,
+				skeleton,
+			};
+			const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm, 2);
+			const entity: L2Workflow = {
 
 					id: proposed.id,
 					intent: proposed.intent,
 					steps: stepsFromProposal(proposed),
 				};
-						if (similarTo) {
-							const merged = opts.dryRun ? opts.store.getEntry(similarTo) : opts.store.mergeInto(entity, similarTo, 2);
+			if (similarTo) {
+				const merged = opts.dryRun ? opts.store.getEntry(similarTo) : opts.store.mergeInto(entity, similarTo, 2, { evidenceKey, source, provenance: { pipeline: EXTRACTION_PIPELINE_VERSION, schema: EXTRACTION_SCHEMA_VERSION, model: opts.modelFingerprint ?? "unknown" } });
 							if (merged) {
 								report.mergedInto.push(similarTo);
 								catalogEntryIds.add(similarTo);
-							} else {
-								if (!opts.dryRun) opts.store.upsertEntity(entity, 2);
-								report.l2Created.push(proposed.id);
-								catalogEntryIds.add(proposed.id);
-							}
-					} else {
-
-						if (!opts.dryRun) opts.store.upsertEntity(entity, 2);
-						report.l2Created.push(proposed.id);
-						catalogEntryIds.add(proposed.id);
-					}
+				} else {
+					if (!opts.dryRun) opts.store.upsertEntity(entity, 2, { evidenceKey, source, provenance: { pipeline: EXTRACTION_PIPELINE_VERSION, schema: EXTRACTION_SCHEMA_VERSION, model: opts.modelFingerprint ?? "unknown" } });
+					report.l2Created.push(proposed.id);
+					catalogEntryIds.add(proposed.id);
+				}
+			} else {
+				if (!opts.dryRun) opts.store.upsertEntity(entity, 2, { evidenceKey, source, provenance: { pipeline: EXTRACTION_PIPELINE_VERSION, schema: EXTRACTION_SCHEMA_VERSION, model: opts.modelFingerprint ?? "unknown" } });
+				report.l2Created.push(proposed.id);
+				catalogEntryIds.add(proposed.id);
+			}
 
 			}
 		}
@@ -477,7 +554,7 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 				if (target && target.steps[stepIndex] && !target.steps[stepIndex].alternative) {
 					if (!opts.dryRun) {
 						target.steps[stepIndex].alternative = suggestion.alternative;
-						opts.store.upsertEntity(target, 2);
+						opts.store.upsertEntity(target, 2, { countEvidence: false });
 					}
 					report.alternativesProposed.push({ workflowId, stepIndex, alternative: suggestion.alternative });
 				}
@@ -487,7 +564,7 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 
 	if (!opts.dryRun) {
 		const finalTasks = loadTasks(opts.journalsRoot, opts.projectKey);
-		writeManifest(manifestRoot, { ...inputManifest(opts.projectKey, finalTasks), completedAt: new Date().toISOString() });
+		writeManifest(manifestRoot, { ...inputManifest(opts.projectKey, finalTasks, opts.store, modelFingerprint), completedAt: new Date().toISOString() });
 	}
 	return report;
 }

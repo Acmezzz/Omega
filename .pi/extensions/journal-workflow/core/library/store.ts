@@ -8,7 +8,7 @@
  * - usage >= 4 && escapes * 2 > usage → active → probation
  * - probation && usage >= 8 && escapes * 2 > usage → deprecated
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type LibraryEntity,
@@ -31,6 +31,16 @@ export const DEPRECATE_MIN_USAGE = 8;
 export interface RegistryFile {
 	entries: RegistryEntry[];
 }
+
+export interface EvidenceRecord {
+	evidenceKey: string;
+	entryId: string;
+	source?: Record<string, unknown>;
+	provenance?: Record<string, string>;
+	recordedAt: string;
+}
+
+interface EvidenceLedgerFile { version: 1; entries: EvidenceRecord[] }
 
 const EMPTY_CATALOG: CatalogFile = { version: 1, updatedAt: "", features: [] };
 
@@ -58,11 +68,13 @@ export class WorkflowStore {
 	private readonly rootDir: string;
 	private entries: RegistryEntry[];
 	private catalog: CatalogFile;
+	private evidenceLedger: EvidenceRecord[];
 
-	private constructor(rootDir: string, entries: RegistryEntry[], catalog: CatalogFile) {
+	private constructor(rootDir: string, entries: RegistryEntry[], catalog: CatalogFile, evidenceLedger: EvidenceRecord[] = []) {
 		this.rootDir = rootDir;
 		this.entries = entries;
 		this.catalog = catalog;
+		this.evidenceLedger = evidenceLedger;
 	}
 
 	static load(rootDir: string): WorkflowStore {
@@ -76,7 +88,15 @@ export class WorkflowStore {
 				entries = [];
 			}
 		}
-		return new WorkflowStore(rootDir, entries, readCatalog(rootDir));
+		const ledgerPath = join(rootDir, ".evidence-ledger.json");
+		let evidenceLedger: EvidenceRecord[] = [];
+		if (existsSync(ledgerPath)) {
+			try {
+				const parsed = JSON.parse(readFileSync(ledgerPath, "utf8")) as EvidenceLedgerFile;
+				if (parsed.version === 1 && Array.isArray(parsed.entries)) evidenceLedger = parsed.entries;
+			} catch { evidenceLedger = []; }
+		}
+		return new WorkflowStore(rootDir, entries, readCatalog(rootDir), evidenceLedger);
 	}
 
 	/** Create an empty store at root (used by seeds/tests). */
@@ -193,20 +213,38 @@ export class WorkflowStore {
 		return out;
 	}
 
-	/** Insert or merge an entity: same id → evidence++ merge; new → probation entry. */
-	upsertEntity(entity: LibraryEntity, level: 1 | 2 | 3): RegistryEntry {
+	recordEvidence(entryId: string, evidenceKey: string, metadata: { source?: Record<string, unknown>; provenance?: Record<string, string> } = {}): boolean {
+		if (!evidenceKey.trim() || this.evidenceLedger.some((record) => record.evidenceKey === evidenceKey)) return false;
+		const entry = this.getEntry(entryId);
+		if (!entry) return false;
+		this.evidenceLedger.push({ evidenceKey, entryId, source: metadata.source, provenance: metadata.provenance, recordedAt: new Date().toISOString() });
+		entry.evidence += 1;
+		entry.updatedAt = new Date().toISOString();
+		if (entry.status === "probation" && entry.evidence >= PROMOTION_EVIDENCE) entry.status = "active";
+		this.saveEvidenceLedger();
+		this.save();
+		return true;
+	}
+
+	getEvidenceLedger(): EvidenceRecord[] { return this.evidenceLedger.map((record) => ({ ...record, source: record.source ? { ...record.source } : undefined, provenance: record.provenance ? { ...record.provenance } : undefined })); }
+
+	/** Insert or merge an entity; an evidenceKey makes the evidence update idempotent. */
+	upsertEntity(entity: LibraryEntity, level: 1 | 2 | 3, options: { countEvidence?: boolean; evidenceKey?: string; source?: Record<string, unknown>; provenance?: Record<string, string> } = {}): RegistryEntry {
 		const existing = this.getEntry(entity.id);
 		const now = new Date().toISOString();
-		if (existing) {
-			existing.evidence += 1;
-			existing.updatedAt = now;
-			if (existing.status === "probation" && existing.evidence >= PROMOTION_EVIDENCE) {
-				existing.status = "active";
+		const counted = options.countEvidence !== false && (!options.evidenceKey || !this.evidenceLedger.some((record) => record.evidenceKey === options.evidenceKey));
+			if (existing) {
+				if (counted) existing.evidence += 1;
+				existing.intent = entity.intent;
+				existing.excludes = entity.excludes;
+				existing.updatedAt = now;
+				if (counted && existing.status === "probation" && existing.evidence >= PROMOTION_EVIDENCE) existing.status = "active";
+				this.writeEntity(entity, level);
+				if (counted && options.evidenceKey) this.evidenceLedger.push({ evidenceKey: options.evidenceKey, entryId: existing.id, source: options.source, provenance: options.provenance, recordedAt: now });
+				this.save();
+				if (counted && options.evidenceKey) this.saveEvidenceLedger();
+				return existing;
 			}
-			this.writeEntity(entity, level);
-			this.save();
-			return existing;
-		}
 		const entry: RegistryEntry = {
 			id: entity.id,
 			level,
@@ -220,23 +258,28 @@ export class WorkflowStore {
 		};
 		this.entries.push(entry);
 		this.writeEntity(entity, level);
+		if (options.evidenceKey) this.evidenceLedger.push({ evidenceKey: options.evidenceKey, entryId: entry.id, source: options.source, provenance: options.provenance, recordedAt: now });
 		this.save();
+		if (options.evidenceKey) this.saveEvidenceLedger();
 		return entry;
 	}
 
 	/** Merge a candidate into a same-level canonical entry and persist its entity content. */
-	mergeInto(newEntity: LibraryEntity, existingId: string, level: 1 | 2 | 3): RegistryEntry | undefined {
+	mergeInto(newEntity: LibraryEntity, existingId: string, level: 1 | 2 | 3, options: { countEvidence?: boolean; evidenceKey?: string; source?: Record<string, unknown>; provenance?: Record<string, string> } = {}): RegistryEntry | undefined {
 		const target = this.getEntry(existingId);
-		if (!target) return this.upsertEntity(newEntity, level);
+		if (!target) return this.upsertEntity(newEntity, level, options);
 		if (target.level !== level) return undefined;
 		const canonical = { ...newEntity, id: existingId } as LibraryEntity;
-		target.evidence += 1;
+		const counted = options.countEvidence !== false && (!options.evidenceKey || !this.evidenceLedger.some((record) => record.evidenceKey === options.evidenceKey));
+		if (counted) target.evidence += 1;
 		target.intent = canonical.intent;
 		target.excludes = canonical.excludes;
 		target.updatedAt = new Date().toISOString();
-		if (target.status === "probation" && target.evidence >= PROMOTION_EVIDENCE) target.status = "active";
+		if (counted && target.status === "probation" && target.evidence >= PROMOTION_EVIDENCE) target.status = "active";
 		this.writeEntity(canonical, target.level);
+		if (counted && options.evidenceKey) this.evidenceLedger.push({ evidenceKey: options.evidenceKey, entryId: target.id, source: options.source, provenance: options.provenance, recordedAt: target.updatedAt });
 		this.save();
+		if (counted && options.evidenceKey) this.saveEvidenceLedger();
 		return target;
 	}
 
@@ -289,6 +332,14 @@ export class WorkflowStore {
 		const entry = this.getEntry(id);
 		if (!entry || entry.usage === 0) return 0;
 		return entry.escapes / entry.usage;
+	}
+
+	private saveEvidenceLedger(): void {
+		mkdirSync(this.rootDir, { recursive: true });
+		const path = join(this.rootDir, ".evidence-ledger.json");
+		const temp = `${path}.tmp-${process.pid}`;
+		writeFileSync(temp, `${JSON.stringify({ version: 1, entries: this.evidenceLedger }, null, "\t")}\n`);
+		renameSync(temp, path);
 	}
 
 	private writeEntity(entity: LibraryEntity, level: 1 | 2 | 3): void {

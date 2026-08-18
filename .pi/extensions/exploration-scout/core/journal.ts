@@ -41,7 +41,7 @@ function readLineState(file: string): ExplorationJournalState {
 					invalidSelections += 1;
 					continue;
 				}
-				selections.push({ roundId: parsed.roundId, selection: parsed.selection });
+				selections.push({ roundId: parsed.roundId, selection: { ...parsed.selection, selectionId: parsed.selection.selectionId ?? `legacy-${selections.length + 1}` } });
 				continue;
 			}
 			skippedLines += 1;
@@ -82,8 +82,10 @@ export class ExplorationJournal {
 		this.append({ kind: "round", record });
 	}
 
-	appendSelection(roundId: string, selection: ExplorationSelection): void {
-		this.append({ kind: "selection", roundId, selection });
+	appendSelection(roundId: string, selection: ExplorationSelection): string {
+		const selectionId = selection.selectionId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+		this.append({ kind: "selection", roundId, selection: { ...selection, selectionId } });
+		return selectionId;
 	}
 
 	readState(): ExplorationJournalState {

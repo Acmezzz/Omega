@@ -91,6 +91,28 @@ describe("V1: store transitions", () => {
 		expect(fallback?.status).toBe("probation");
 	});
 
+	it("records evidence once and reloads the ledger", () => {
+		const rootDir = join(root, "ledger");
+		const store = WorkflowStore.createEmpty(rootDir);
+		store.upsertEntity(sampleL1("l1-ledger"), 1);
+		const before = store.getEntry("l1-ledger")!.evidence;
+		expect(store.recordEvidence("l1-ledger", "source-1", { source: { taskId: "task", turnSeq: 1 } })).toBe(true);
+		expect(store.recordEvidence("l1-ledger", "source-1")).toBe(false);
+		expect(store.getEntry("l1-ledger")!.evidence).toBe(before + 1);
+		const reloaded = WorkflowStore.load(rootDir);
+		expect(reloaded.getEvidenceLedger().map((record) => record.evidenceKey)).toEqual(["source-1"]);
+		expect(reloaded.getEntry("l1-ledger")!.evidence).toBe(before + 1);
+	});
+
+	it("can update an entity without counting evidence", () => {
+		const store = WorkflowStore.createEmpty(join(root, "no-evidence"));
+		store.upsertEntity(sampleL2("l2-update"), 2);
+		const before = store.getEntry("l2-update")!.evidence;
+		store.upsertEntity({ ...sampleL2("l2-update"), intent: "更新后的实体" }, 2, { countEvidence: false });
+		expect(store.getEntry("l2-update")!.evidence).toBe(before);
+		expect(store.getEntry("l2-update")!.intent).toBe("更新后的实体");
+	});
+
 	it("seed fixture is loadable from the repository", () => {
 		const seedDir = fileURLToPath(new URL("../fixtures/workflows/seed", import.meta.url));
 		const store = WorkflowStore.load(seedDir);

@@ -1,7 +1,9 @@
 /** Exploration-only data. No journal or workflow implementation types cross this boundary. */
 import type { WorkflowPriorSummary } from "../../_shared/interop.ts";
 
-export type ExplorationAngle = "prior-first" | "evidence-first" | "alternative-first" | "counterexample-first";
+export type ExplorationAngle = "independent" | "prior-first" | "evidence-first" | "alternative-first" | "counterexample-first";
+export type ScoutBias = "none" | "soft";
+export type ScoutSearchPolicy = "broad-read-only";
 export type PriorStatus = "matched" | "none" | "unavailable";
 export type ProbeStatus = "observed" | "not-observed" | "error" | "unknown";
 
@@ -48,7 +50,21 @@ export interface ScoutReport {
 	openQuestions: string[]; limitations: string[]; noWorkPerformed: true;
 }
 export type ScoutRunStatus = "completed" | "timed_out" | "aborted" | "budget_exceeded" | "parse_failed" | "spawn_failed";
-export interface ScoutRunRecord { scoutId: string; angle: ExplorationAngle; status: ScoutRunStatus; toolCallCount: number; durationMs: number; report: ScoutReport | null; rawOutput?: string; error?: string }
+export interface ScoutRunRecord {
+	scoutId: string;
+	angle: ExplorationAngle;
+	bias?: ScoutBias;
+	searchPolicy?: ScoutSearchPolicy;
+	allowedTools?: string[];
+	contextExposure?: "blind" | "focus" | "prior" | "focus+prior";
+	status: ScoutRunStatus;
+	toolCallCount: number;
+	durationMs: number;
+	reportedToolNames?: string[];
+	report: ScoutReport | null;
+	rawOutput?: string;
+	error?: string;
+}
 export interface ExplorationPacket { round: number; prior: PriorResolution; runs: ScoutRunRecord[]; content: string; focus?: string }
 export interface ScoutRoundRecord {
 	roundId: string; taskId: string; projectKey: string; trigger: "initial" | "replan" | "targeted";
@@ -56,7 +72,16 @@ export interface ScoutRoundRecord {
 	packet: ExplorationPacket; adoptedProposalIds: string[]; combinedPlanSummary?: string; focus?: string;
 	verifiedOutcome: "not-yet-executed" | "succeeded" | "failed" | "aborted";
 }
-export interface ExplorationSelection { selectedProposalIds: string[]; combinedPlanSummary: string | null; reason: string | null }
+export interface ExplorationSelection { selectionId?: string; selectedProposalIds: string[]; combinedPlanSummary: string | null; reason: string | null }
+export interface ExplorationSelectionEvent {
+	projectKey: string;
+	taskId: string;
+	roundId: string;
+	selectionId: string;
+	selectedProposalIds: string[];
+	combinedPlanSummary: string | null;
+	reason: string | null;
+}
 export interface ExplorationRoundView extends ScoutRoundRecord { selection: ExplorationSelection | null }
 export interface ExplorationJournalState {
 	rounds: ScoutRoundRecord[];

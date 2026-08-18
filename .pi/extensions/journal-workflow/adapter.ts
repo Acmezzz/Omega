@@ -476,10 +476,11 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		}
 			w.handleEvent({ kind: "agent_settled" });
 			// Evidence is earned only after every tracked step is complete.
-			if (tracker && activeEntry && tracker.completed && w.flushedTurn?.outcome === "completed") {
-				getStore().bumpEvidence(activeEntry.id);
-				resetEngine();
-			}
+				if (tracker && activeEntry && tracker.completed && w.flushedTurn?.outcome === "completed") {
+					const completedTurn = w.flushedTurn;
+					getStore().recordEvidence(activeEntry.id, `runtime:${w.projectKey}:${w.taskId}:${completedTurn?.seq ?? "unknown"}:${activeEntry.id}`, { source: { kind: "workflow-completion", projectKey: w.projectKey, taskId: w.taskId, turnSeq: completedTurn?.seq ?? null, workflowId: activeEntry.id }, provenance: { source: "journal-workflow" } });
+					resetEngine();
+				}
 
 		// Fire-and-forget distillation of the just-flushed fact turn.
 		const flushed = w.flushedTurn;
@@ -527,10 +528,11 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 	registerWorkflowCommands(
 		pi as unknown as CommandPi,
 		{
-			config: deps.config,
-			llm,
-			resolveProjectKey: projectKeyFromCwd,
-		},
+				config: deps.config,
+				llm,
+				resolveProjectKey: projectKeyFromCwd,
+				isTaskActive: (projectKey, taskId) => writer?.projectKey === projectKey && writer?.taskId === taskId,
+			},
 		(text) => {
 			const notify = (currentCtx as { ui?: { notify?: (t: string) => void } } | undefined)?.ui?.notify;
 			if (notify) notify(text);

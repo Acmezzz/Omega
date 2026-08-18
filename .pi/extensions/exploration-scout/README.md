@@ -58,8 +58,9 @@ explore_space({
 - 按 task 的 round budget 拒绝重复或超预算轮次；
 - 启动多个独立的 `pi --no-session` Scout；
 - 默认使用当前会话的 provider/model，thinking 为 low；
-- 默认只读工具为 `read,grep,find,ls`；
-- `focus` 会进入 Scout prompt，作为“待检验的定向问题”，不会被当作既定方案；
+- 所有 Scout 使用相同的只读工具白名单：`read,grep,find,ls`；可以自由选择工作区内相关文件和目录，但不能运行 shell、git、网络、写入或安装操作；
+- 每轮至少保留一个不接收 focus/prior 详情的 blind `independent` Scout；
+- `focus` 只会暴露给定向角色，作为不可信的“待检验问题”，不会被当作既定方案或路径限制；
 - 返回受 `maxPacketChars` 限制的 ExplorationPacket；
 - 将 round、focus、模型、预算、Scout 状态和报告追加到 exploration journal。
 
@@ -82,14 +83,15 @@ select_exploration({
 
 ## 3. Scout 角色和报告约束
 
-角色是搜索顺序偏好，不是硬分工：
+角色是轻量搜索起点，不是硬分工：
 
-- `prior-first`：先看可选 advisory，再继续从零搜索；
-- `evidence-first`：先看代码、测试、错误和调用关系；
+- `independent`：无偏置、blind，从任务和工作区事实自由开始；
+- `prior-first`：优先检查可选 advisory，但其他方向仍可自由搜索；
+- `evidence-first`：优先看代码、测试、配置和调用关系；
 - `alternative-first`：优先尝试不同的问题分解或证据路径；
-- `counterexample-first`：优先找前置条件、反例和兼容性风险。
+- `counterexample-first`：优先寻找前置条件、反例和兼容性风险。
 
-所有 Scout 都可以读取任何相关信息源，也都必须具备从零探索能力。报告禁止：
+角色顺序会按轮次和任务输入轮换；所有角色的 bias/searchPolicy/allowedTools/contextExposure 都会记录。角色偏好可以被事实推翻，不能限制目录、工具、信息源或结论。证据不足时允许返回 0 个 proposal，不强迫 Scout 编造方案。报告禁止：
 
 ```text
 best / rank / confidence / recommendation
@@ -113,7 +115,7 @@ best / rank / confidence / recommendation
   rounds.jl
 ```
 
-`rounds.jl` 保持 append-only，包含两类事件：
+`rounds.jl` 保持 append-only，包含两类事件；每次 selection 都有独立的 opaque `selectionId`：
 
 ```json
 {"kind":"round","record":{...}}
@@ -225,7 +227,7 @@ interface WorkflowPriorProvider {
 - 需要正式日志和 workflow guidance 时启用 journal-workflow；
 - 需要避免 workflow 先验对探索造成启动锚定时，可以将 workflow policy 设为 `off`；
 - selection 结果需要由主 Agent 带入正式执行；
-- 当前没有自动 `roundId → journal turn → verifiedOutcome` 关联协议。
+- 当前没有自动 `roundId → selectionId → executionId → journal turn → verifiedOutcome` 关联协议；`selectionId` 只作为可选弱关联事件的 opaque 标识。
 
 禁用其中一个插件不会阻止另一个插件独立运行。
 

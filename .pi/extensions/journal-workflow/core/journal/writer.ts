@@ -225,6 +225,24 @@ export class JournalWriter {
 		}
 	}
 
+	/** Append fact turns recovered from a backup; existing seq values are not overwritten. */
+	appendRecoveredTurns(turns: TurnRecord[]): number {
+		let written = 0;
+		for (const turn of [...turns].sort((a, b) => a.seq - b.seq)) {
+			if (turn.seq <= this.lastSeq) continue;
+			this.lastSeq = turn.seq;
+			this.rotateBlockIfNeeded();
+			this.appendLine({ kind: "turn", seq: turn.seq, turn });
+			this.meta.blocks.at(-1)!.toSeq = turn.seq;
+			this.meta.turnCount = this.lastSeq;
+			this.meta.outcome = turn.outcome;
+			this.meta.updatedAt = new Date().toISOString();
+			written += 1;
+		}
+		if (written > 0) this.writeMeta();
+		return written;
+	}
+
 	/** Distillation writes its result as an append-only patch line. */
 	appendPatch(seq: number, patch: TurnPatch): void {
 		const line: JournalLine = { kind: "patch", seq, patch, extractedAt: new Date().toISOString() };

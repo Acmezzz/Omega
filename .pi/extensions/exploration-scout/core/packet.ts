@@ -12,9 +12,9 @@ import type {
 } from "./types.ts";
 import type { ExplorationBudget } from "./types.ts";
 
-const ANGLES = new Set<ExplorationAngle>(["prior-first", "evidence-first", "alternative-first", "counterexample-first"]);
+const ANGLES = new Set<ExplorationAngle>(["independent", "prior-first", "evidence-first", "alternative-first", "counterexample-first"]);
 const PROBE_STATUSES = new Set(["observed", "not-observed", "error", "unknown"]);
-const BANNED = /\b(best|ranking|rank|confidence|recommendation|recommended)\b/i;
+const RANKING_KEYS = new Set(["best", "ranking", "rank", "confidence", "recommendation", "recommended", "最佳", "排名", "置信度", "推荐"]);
 
 function stringArray(value: unknown, max: number): string[] {
 	return Array.isArray(value)
@@ -45,6 +45,11 @@ function probeArray(value: unknown): ProbeRecord[] {
 		.filter((x) => x.question && x.action && x.observation);
 }
 
+function hasRankingField(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	return Object.keys(value).some((key) => RANKING_KEYS.has(key));
+}
+
 function proposalArray(value: unknown, max: number): Proposal[] {
 	if (!Array.isArray(value)) return [];
 	return value
@@ -62,19 +67,18 @@ function proposalArray(value: unknown, max: number): Proposal[] {
 		.slice(0, max);
 }
 
-export function parseScoutReport(raw: string, scoutId: string, angle: ExplorationAngle, priorStatus: ScoutReport["priorStatus"]): ScoutReport | null {
+export function parseScoutReport(raw: string, scoutId: string, angle: ExplorationAngle, priorStatus: ScoutReport["priorStatus"], maxProposals = 2): ScoutReport | null {
 	const parsed = parseJsonLoose(raw);
 	if (!parsed || typeof parsed !== "object") return null;
 	const obj = parsed as Record<string, unknown>;
-	const text = JSON.stringify(obj);
-	if (BANNED.test(text)) return null;
+	if (hasRankingField(obj)) return null;
 	if (obj.noWorkPerformed !== true) return null;
 	if (typeof obj.priorStatus === "string" && obj.priorStatus !== priorStatus) return null;
 	return {
 		scoutId,
 		angle: ANGLES.has(angle) ? angle : "evidence-first",
 		priorStatus,
-		proposals: proposalArray(obj.proposals, 2),
+			proposals: proposalArray(obj.proposals, maxProposals),
 		sourcesChecked: stringArray(obj.sourcesChecked, 12),
 		searchesPerformed: stringArray(obj.searchesPerformed, 12),
 		verifiedFacts: factArray(obj.verifiedFacts, 8),
@@ -95,7 +99,7 @@ function renderReport(run: ScoutRunRecord): string {
 	const proposals = report.proposals
 		.map(
 			(p) =>
-				`候选 ${p.id}: ${p.idea}\n  步骤: ${p.steps.join(" → ")}\n  假设: ${p.assumptions.join("；") || "无"}\n  探查: ${p.probes.map((probe) => `${probe.question} => ${probe.observation} [${probe.status}]`).join("；") || "无"}\n  淘汰条件: ${p.disqualifiers.join("；") || "无"}`,
+					`候选 ${p.id}: ${p.idea}\n  步骤: ${p.steps.join(" → ")}\n  假设: ${p.assumptions.join("；") || "无"}\n  预期证据: ${p.expectedEvidence.join("；") || "无"}\n  探查: ${p.probes.map((probe) => `${probe.question} => ${probe.observation} [${probe.status}]`).join("；") || "无"}\n  淘汰条件: ${p.disqualifiers.join("；") || "无"}`,
 		)
 		.join("\n");
 	return `[${report.angle} / prior=${report.priorStatus}]\n${proposals}\n事实: ${report.verifiedFacts.map((f) => `${f.fact} (${f.source})`).join("；") || "无"}\n反证: ${report.negativeEvidence.map((f) => `${f.fact} (${f.source})`).join("；") || "无"}\n未知: ${report.openQuestions.join("；") || "无"}\n限制: ${report.limitations.join("；") || "无"}`;
