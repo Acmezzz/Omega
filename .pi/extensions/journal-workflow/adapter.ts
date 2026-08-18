@@ -23,6 +23,7 @@ import { renderGuidance } from "./core/engine/injector.ts";
 import { checkExpect } from "./core/engine/validator.ts";
 import { EngineTracker, type EngineAction } from "./core/engine/tracker.ts";
 import { registerWorkflowCommands, type CommandPi } from "./commands.ts";
+import { createExecutionIds, WorkflowTraceWriter } from "./core/trace.ts";
 import type { JournalWorkflowConfig } from "./config.ts";
 
 export interface WireDeps {
@@ -165,8 +166,10 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 	// ---- Engine state (per session) ----
 	let store: WorkflowStore | null = null;
 	let tracker: EngineTracker | null = null;
-	let activeEntry: RegistryEntry | null = null;
-	const matchCache: MatchCache = new Map<string, RegistryEntry | null>() as MatchCache;
+		let activeEntry: RegistryEntry | null = null;
+		let executionIds: { executionId: string; workflowRunId: string } | null = null;
+		let traceWriter: WorkflowTraceWriter | null = null;
+		const matchCache: MatchCache = new Map<string, RegistryEntry | null>() as MatchCache;
 
 	const getStore = (): WorkflowStore => {
 		if (!store) store = WorkflowStore.load(deps.config.workflowsRoot);
@@ -226,6 +229,8 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 			const resetEngine = (): void => {
 				tracker = null;
 				activeEntry = null;
+				executionIds = null;
+				traceWriter = null;
 				clearTrackerSnapshot();
 				writer?.setActiveWorkflow(null);
 			};
@@ -233,11 +238,14 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		const executeEngineActions = (actions: EngineAction[]): void => {
 			for (const action of actions) {
 				if (action.message !== null) steer(action.message);
-				if (action.type === "escape") {
-					writer?.appendFailure(action.failure);
-					if (activeEntry) getStore().bumpEscape(activeEntry.id);
-					resetEngine();
-				}
+					if (action.type === "escape") {
+						writer?.appendFailure(action.failure);
+						if (activeEntry) getStore().bumpEscape(activeEntry.id);
+						traceWriter?.append({ kind: "escape", executionId: executionIds?.executionId, workflowRunId: executionIds?.workflowRunId, workflowId: activeEntry?.id, projectKey: writer?.projectKey, taskId: writer?.taskId, turnSeq: writer?.currentTurnSeq ?? undefined, outcome: "inconclusive", source: "tracker-escape", details: { stepIndex: action.failure.stepIndex } });
+						traceWriter?.append({ kind: "recovery-hint", executionId: executionIds?.executionId, workflowRunId: executionIds?.workflowRunId, workflowId: activeEntry?.id, projectKey: writer?.projectKey, taskId: writer?.taskId, source: "workflow-escape" });
+						resetEngine();
+					}
+
 			}
 		};
 
@@ -345,6 +353,12 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 				const l2 = getStore().getL2(entry.id);
 				const restored = l2 ? restoreTracker(l2.id, l2.steps) : null;
 				resetEngine();
+				if (writer) traceWriter = new WorkflowTraceWriter(writer.dir);
+				executionIds = createExecutionIds();
+				if (traceWriter) {
+					traceWriter.append({ kind: "execution-start", executionId: executionIds.executionId, workflowRunId: executionIds.workflowRunId, workflowId: entry.id, projectKey: writer?.projectKey, taskId: writer?.taskId });
+					traceWriter.append({ kind: "workflow-activation", executionId: executionIds.executionId, workflowRunId: executionIds.workflowRunId, workflowId: entry.id, projectKey: writer?.projectKey, taskId: writer?.taskId });
+				}
 				activeEntry = entry;
 				getStore().bumpUsage(entry.id);
 				const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
@@ -476,11 +490,12 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		}
 			w.handleEvent({ kind: "agent_settled" });
 			// Evidence is earned only after every tracked step is complete.
-				if (tracker && activeEntry && tracker.completed && w.flushedTurn?.outcome === "completed") {
-					const completedTurn = w.flushedTurn;
-					getStore().recordEvidence(activeEntry.id, `runtime:${w.projectKey}:${w.taskId}:${completedTurn?.seq ?? "unknown"}:${activeEntry.id}`, { source: { kind: "workflow-completion", projectKey: w.projectKey, taskId: w.taskId, turnSeq: completedTurn?.seq ?? null, workflowId: activeEntry.id }, provenance: { source: "journal-workflow" } });
-					resetEngine();
-				}
+					if (tracker && activeEntry && tracker.completed && w.flushedTurn?.outcome === "completed") {
+						const completedTurn = w.flushedTurn;
+						getStore().recordEvidence(activeEntry.id, `runtime:${w.projectKey}:${w.taskId}:${completedTurn?.seq ?? "unknown"}:${activeEntry.id}`, { source: { kind: "workflow-completion", projectKey: w.projectKey, taskId: w.taskId, turnSeq: completedTurn?.seq ?? null, workflowId: activeEntry.id, executionId: executionIds?.executionId ?? null, workflowRunId: executionIds?.workflowRunId ?? null }, provenance: { source: "journal-workflow" } });
+						traceWriter?.append({ kind: "workflow-completed", executionId: executionIds?.executionId, workflowRunId: executionIds?.workflowRunId, workflowId: activeEntry.id, projectKey: w.projectKey, taskId: w.taskId, turnSeq: completedTurn?.seq, source: "tracker-completed" });
+						resetEngine();
+					}
 
 		// Fire-and-forget distillation of the just-flushed fact turn.
 		const flushed = w.flushedTurn;

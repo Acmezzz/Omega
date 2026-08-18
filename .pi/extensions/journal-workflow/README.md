@@ -65,7 +65,7 @@ before_agent_start
 
 tracker 当前以任务目录下的 `tracker.json` 保存活动快照。快照包括 workflow ID、步骤数量、当前步骤、retry、已消费 toolCall、工具进度和 alternative 状态。重新打开同一个 task 时，只有 workflow ID 和步骤数量都匹配才恢复；不匹配或损坏时会安全删除快照并从新流程开始。尚未完成的异步 checkpoint 不会被提前写成通过。
 
-tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移机制。L3 阶段状态、跨进程完整事件 replay 和未 flush 的内存回合仍不能自动恢复。
+tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移机制。L3 阶段状态、跨进程完整事件 replay 和未 flush 的内存回合仍不能自动恢复。每次 workflow 激活还会在任务目录追加 `trace.jl`，记录 executionId、workflowRunId、workflow activation、tracker completion、escape 和 recovery hint；`workflow-completed` 只表示流程完成，不等同于用户目标 succeeded。
 
 设置 `workflowPolicy: "off"` 时：
 
@@ -121,10 +121,13 @@ tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移�
 |---|---|
 | `/wf-extract` | 重新提炼 pending turn，提取/合并工作流，并维护功能目录 |
 | `/wf-list` | 查看 registry、level、状态、evidence、usage 和 escapes |
-| `/wf-catalog` | 查看抽象功能类别及其成员 |
+| `/wf-catalog` | 查看抽象功能类别、成员和客观 usage/escape/evidence 统计 |
 | `/wf-stats` | 查看项目任务、回合、待提炼数量和 escape 记录 |
 | `/journal-restore <task-id> [--dry-run\|--apply]` | 从 backup 事件恢复尚未落盘的事实回合，默认 dry-run |
 | `/wf-health [task-id] [--json]` | 只读检查 journal、backup、workflow 和 extraction 数据健康状态 |
+| `/wf-trace <task-id>` | 只读查看 workflow execution trace |
+| `/wf-show <workflow-id>` | 只读查看 workflow 定义、步骤、checkpoint 和 alternative |
+| `/wf-sources <workflow-id>` | 只读查看 workflow evidence 来源摘要 |
 
 推荐循环：
 
@@ -134,7 +137,7 @@ tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移�
 
 `/journal-restore` 只把已成功写入 backup 的事件恢复为 append-only fact turns；不恢复 workflowRef、tracker、failures、registry evidence、LLM patch 或 entry IDs。默认 dry-run，显式 `--apply` 才写入；重复 apply 对已有 turn seq 返回 no-op。恢复后的回合保持 pending distill，由 `/wf-extract` 处理。
 
-`/wf-health` 是只读检查，不自动 repair/cleanup；报告只输出状态、计数、路径和错误码，不输出 payload、正文或 thinking。
+`/wf-health` 是只读检查，不自动 repair/cleanup；报告只输出状态、计数、路径和错误码，不输出 payload、正文或 thinking。`trace.jl` 是任务目录下的 append-only 执行关联 sidecar，只记录 opaque ID、workflow/task/turn 引用、事件类型、结果状态和来源；`/wf-trace`、`/wf-show`、`/wf-sources` 只输出摘要，不输出 payload、正文、thinking 或 restricted fragment。
 
 `/wf-extract` 会把当前项目任务的 task/seq 输入摘要保存到：
 
@@ -227,7 +230,7 @@ PI_CODING_AGENT_DIR=/path/to/agent
 ```bash
 cd .pi/extensions/journal-workflow
 npx tsc -p tsconfig.check.json # strict 类型检查
-npx vitest run                 # 56 项通过，3 项 live 测试按条件跳过
+npx vitest run                 # 58 项通过，3 项 live 测试按条件跳过
 ```
 
 核心入口：

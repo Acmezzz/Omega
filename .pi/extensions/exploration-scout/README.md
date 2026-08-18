@@ -22,7 +22,7 @@
   → 主 Agent 正式执行并用外部结果验证
 ```
 
-Scout 只返回未验证的 observation、hypothesis、proposal、unknown、反证和限制。它不声称任务完成，也不把候选当作执行约束。
+Scout 只返回未验证的 observation、hypothesis、mechanism、proposal、简单验证、unknown、反证和限制。proposal 可以包含目标、原理、前置条件、步骤、预期证据、回退路径和 `closureStatus=closed|partial`；它不声称任务完成，也不把候选当作执行约束。报告中的观察、原理和候选不包含排名、推荐、评分或置信度。
 
 默认 `policy` 为 `manual`。用户通过 `/exploration-scout` 开启或关闭 Scout 模式；只有模式开启时，插件才在 `before_agent_start` 追加探索协议。显式配置 `policy: "explore-first"` 仍保留旧的自动协议行为，`off` 永久禁用。
 
@@ -71,12 +71,13 @@ explore_space({
 - 校验中立 TaskBrief；
 - 按 task 的 round budget 拒绝重复或超预算轮次；
 - 启动多个独立的 `pi --no-session` Scout；
-- 默认使用当前会话的 provider/model，thinking 为 low；
+- 默认继承当前会话的 provider/model，不强制降低 thinking level；Scout 可以广泛思考、扩展搜索空间，只做简单的只读验证；
+- 单个 Scout 默认不限制思考 token、工具调用数、运行时间或原始输出长度；这些字段只有显式配置时才作为失控保护；
 - 所有 Scout 使用相同的只读工具白名单：`read,grep,find,ls`；可以自由选择工作区内相关文件和目录，但不能运行 shell、git、网络、写入或安装操作；
 - 每轮至少保留一个不接收 focus/prior 详情的 blind `independent` Scout；
 - `focus` 只会暴露给定向角色，作为不可信的“待检验问题”，不会被当作既定方案或路径限制；
 - 返回受 `maxPacketChars` 限制的 ExplorationPacket；
-- 将 round、focus、模型、预算、Scout 状态和报告追加到 exploration journal。
+- 将 round、focus、模型、预算、Scout 状态、报告和真实工具足迹追加到 exploration journal；真实足迹包含实际只读工具、目标路径、查询和成功状态，不等同于 Scout 自己声称检查过的来源；
 
 ### `select_exploration`
 
@@ -111,7 +112,7 @@ select_exploration({
 best / rank / confidence / recommendation
 ```
 
-每个 Scout 受工具调用数、输出字符数、超时和取消信号约束。失败状态包括：
+每个 Scout 受只读工具、并发数量、用户取消和进程回收约束；工具调用数、输出字符数和超时只有显式配置时才启用。失败状态包括：
 
 - `completed`；
 - `timed_out`；
@@ -158,11 +159,8 @@ best / rank / confidence / recommendation
 {
   "maxScouts": 3,
   "maxConcurrent": 3,
-  "maxToolCallsPerScout": 4,
   "maxProposalsPerScout": 2,
-  "maxScoutOutputChars": 8000,
   "maxPacketChars": 18000,
-  "timeoutMsPerScout": 45000,
   "maxRoundsPerTask": 2
 }
 ```
@@ -249,7 +247,7 @@ interface WorkflowPriorProvider {
 
 1. `explore_space` 被拒绝：检查 TaskBrief 中是否包含方案性语言、round 是否重复、`maxRoundsPerTask` 是否已用尽。
 2. selection 无法继续：确认当前 task ID、`rounds.jl` 是否存在以及 proposal ID 是否属于最新 round；损坏或不匹配事件会被安全跳过。
-3. Scout 超时或预算超限：查看返回的 status，减少 `maxScouts`、`maxToolCallsPerScout` 或调整 focus。
+3. Scout 运行异常：查看返回的 status；如需失控保护，可显式配置 `maxToolCallsPerScout`、`timeoutMsPerScout` 或 `maxScoutOutputChars`。
 4. 找不到数据：检查 `PI_CODING_AGENT_DIR`、`explorationsRoot` 和 task/project identity；配置中的 `~` 会展开到 home 目录。
 5. 需要清理：停止任务后备份并删除目标 project/task 目录；当前没有自动 retention 命令。
 

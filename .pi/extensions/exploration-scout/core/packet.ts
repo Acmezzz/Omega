@@ -7,6 +7,8 @@ import type {
 	PriorResolution,
 	Proposal,
 	ProbeRecord,
+	ScoutObservation,
+	ScoutMechanism,
 	ScoutReport,
 	ScoutRunRecord,
 } from "./types.ts";
@@ -62,6 +64,12 @@ function proposalArray(value: unknown, max: number): Proposal[] {
 			expectedEvidence: stringArray(x.expectedEvidence, 8),
 			disqualifiers: stringArray(x.disqualifiers, 8),
 			probes: probeArray(x.probes).slice(0, 6),
+			...(typeof x.objective === "string" ? { objective: x.objective } : {}),
+			...(typeof x.principle === "string" ? { principle: x.principle } : {}),
+			...(Array.isArray(x.preconditions) ? { preconditions: stringArray(x.preconditions, 8) } : {}),
+			...(Array.isArray(x.fallback) ? { fallback: stringArray(x.fallback, 8) } : {}),
+			...(x.closureStatus === "closed" || x.closureStatus === "partial" ? { closureStatus: x.closureStatus } : {}),
+			...(Array.isArray(x.basedOnObservationIds) ? { basedOnObservationIds: stringArray(x.basedOnObservationIds, 12) } : {}),
 		}))
 		.filter((x) => x.id && x.idea && x.steps.length > 0)
 		.slice(0, max);
@@ -78,7 +86,11 @@ export function parseScoutReport(raw: string, scoutId: string, angle: Exploratio
 		scoutId,
 		angle: ANGLES.has(angle) ? angle : "evidence-first",
 		priorStatus,
-			proposals: proposalArray(obj.proposals, maxProposals),
+		proposals: proposalArray(obj.proposals, maxProposals),
+		...(Array.isArray(obj.observations) ? { observations: (obj.observations as unknown[]).filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item, index): ScoutObservation => ({ id: typeof item.id === "string" ? item.id : `observation-${index + 1}`, statement: typeof item.statement === "string" ? item.statement : "", sourceRefs: stringArray(item.sourceRefs, 8), status: item.status === "observed" || item.status === "not-observed" || item.status === "unknown" ? item.status : "unknown" })).filter((item) => item.statement).slice(0, 16) } : {}),
+		...(Array.isArray(obj.mechanisms) ? { mechanisms: (obj.mechanisms as unknown[]).filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item, index): ScoutMechanism => ({ id: typeof item.id === "string" ? item.id : `mechanism-${index + 1}`, statement: typeof item.statement === "string" ? item.statement : "", basedOnObservationIds: stringArray(item.basedOnObservationIds, 12), causalChain: stringArray(item.causalChain, 8), unknownConditions: stringArray(item.unknownConditions, 8) })).filter((item) => item.statement).slice(0, 12) } : {}),
+		...(Array.isArray(obj.lightweightChecks) ? { lightweightChecks: probeArray(obj.lightweightChecks).slice(0, 12) } : {}),
+		...(Array.isArray(obj.deadEnds) ? { deadEnds: factArray(obj.deadEnds, 12) } : {}),
 		sourcesChecked: stringArray(obj.sourcesChecked, 12),
 		searchesPerformed: stringArray(obj.searchesPerformed, 12),
 		verifiedFacts: factArray(obj.verifiedFacts, 8),
@@ -99,10 +111,13 @@ function renderReport(run: ScoutRunRecord): string {
 	const proposals = report.proposals
 		.map(
 			(p) =>
-					`候选 ${p.id}: ${p.idea}\n  步骤: ${p.steps.join(" → ")}\n  假设: ${p.assumptions.join("；") || "无"}\n  预期证据: ${p.expectedEvidence.join("；") || "无"}\n  探查: ${p.probes.map((probe) => `${probe.question} => ${probe.observation} [${probe.status}]`).join("；") || "无"}\n  淘汰条件: ${p.disqualifiers.join("；") || "无"}`,
+					`候选 ${p.id}: ${p.idea}${p.closureStatus ? ` [闭环=${p.closureStatus}]` : ""}\n  目标: ${p.objective ?? "无"}\n  原理: ${p.principle ?? "无"}\n  步骤: ${p.steps.join(" → ")}\n  假设: ${p.assumptions.join("；") || "无"}\n  预期证据: ${p.expectedEvidence.join("；") || "无"}\n  回退: ${p.fallback?.join("；") || "无"}\n  探查: ${p.probes.map((probe) => `${probe.question} => ${probe.observation} [${probe.status}]`).join("；") || "无"}\n  淘汰条件: ${p.disqualifiers.join("；") || "无"}`,
 		)
 		.join("\n");
-	return `[${report.angle} / prior=${report.priorStatus}]\n${proposals}\n事实: ${report.verifiedFacts.map((f) => `${f.fact} (${f.source})`).join("；") || "无"}\n反证: ${report.negativeEvidence.map((f) => `${f.fact} (${f.source})`).join("；") || "无"}\n未知: ${report.openQuestions.join("；") || "无"}\n限制: ${report.limitations.join("；") || "无"}`;
+		const observations = report.observations?.map((item) => `${item.id}: ${item.statement} [${item.status}]`).join("；") || "无";
+		const mechanisms = report.mechanisms?.map((item) => `${item.id}: ${item.statement}`).join("；") || "无";
+		const footprint = run.footprint ? `足迹: 工具=${run.footprint.toolCalls.length}，路径=${run.footprint.paths.length}，查询=${run.footprint.queries.length}` : "足迹: 无";
+		return `[${report.angle} / prior=${report.priorStatus}]\n${footprint}\n观察: ${observations}\n原理: ${mechanisms}\n${proposals}\n事实: ${report.verifiedFacts.map((f) => `${f.fact} (${f.source})`).join("；") || "无"}\n反证: ${report.negativeEvidence.map((f) => `${f.fact} (${f.source})`).join("；") || "无"}\n未知: ${report.openQuestions.join("；") || "无"}\n限制: ${report.limitations.join("；") || "无"}`;
 }
 
 export function renderPacketContent(round: number, prior: PriorResolution, runs: ScoutRunRecord[], maxChars: number): string {

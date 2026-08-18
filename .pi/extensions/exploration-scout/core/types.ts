@@ -24,17 +24,16 @@ export interface TaskBrief {
 export interface ExplorationBudget {
 	maxScouts: number;
 	maxConcurrent: number;
-	maxToolCallsPerScout: number;
-	maxProposalsPerScout: number;
-	maxScoutOutputChars: number;
+	maxToolCallsPerScout?: number;
+	maxProposalsPerScout?: number;
+	maxScoutOutputChars?: number;
 	maxPacketChars: number;
-	timeoutMsPerScout: number;
+	timeoutMsPerScout?: number;
 	maxRoundsPerTask: number;
 }
 
 export const DEFAULT_EXPLORATION_BUDGET: ExplorationBudget = {
-	maxScouts: 3, maxConcurrent: 3, maxToolCallsPerScout: 4, maxProposalsPerScout: 2,
-	maxScoutOutputChars: 8_000, maxPacketChars: 18_000, timeoutMsPerScout: 45_000, maxRoundsPerTask: 2,
+	maxScouts: 3, maxConcurrent: 3, maxPacketChars: 18_000, maxRoundsPerTask: 2,
 };
 
 export type PriorResolution =
@@ -44,10 +43,53 @@ export type PriorResolution =
 
 export interface ProbeRecord { question: string; action: string; observation: string; status: ProbeStatus; source?: string }
 export interface Proposal { id: string; idea: string; steps: string[]; assumptions: string[]; expectedEvidence: string[]; disqualifiers: string[]; probes: ProbeRecord[] }
+export interface ScoutFootprintToolCall {
+	index: number;
+	tool: "read" | "grep" | "find" | "ls";
+	target: string | null;
+	query: string | null;
+	success: boolean;
+}
+
+export interface ScoutFootprint {
+	toolCalls: ScoutFootprintToolCall[];
+	paths: string[];
+	queries: string[];
+}
+
+export interface ScoutObservation {
+	id: string;
+	statement: string;
+	sourceRefs: string[];
+	status: "observed" | "not-observed" | "unknown";
+}
+
+export interface ScoutMechanism {
+	id: string;
+	statement: string;
+	basedOnObservationIds: string[];
+	causalChain: string[];
+	unknownConditions: string[];
+}
+
+export interface ScoutClosedProposal extends Proposal {
+	objective?: string;
+	principle?: string;
+	preconditions?: string[];
+	fallback?: string[];
+	closureStatus?: "closed" | "partial";
+	basedOnObservationIds?: string[];
+}
+
 export interface ScoutReport {
-	scoutId: string; angle: ExplorationAngle; priorStatus: PriorStatus; proposals: Proposal[];
+	scoutId: string; angle: ExplorationAngle; priorStatus: PriorStatus; proposals: ScoutClosedProposal[];
+	observations?: ScoutObservation[];
+	mechanisms?: ScoutMechanism[];
+	lightweightChecks?: ProbeRecord[];
+	deadEnds?: KnownFact[];
 	sourcesChecked: string[]; searchesPerformed: string[]; verifiedFacts: KnownFact[]; negativeEvidence: KnownFact[];
 	openQuestions: string[]; limitations: string[]; noWorkPerformed: true;
+	footprint?: ScoutFootprint;
 }
 export type ScoutRunStatus = "completed" | "timed_out" | "aborted" | "budget_exceeded" | "parse_failed" | "spawn_failed";
 export interface ScoutRunRecord {
@@ -61,6 +103,7 @@ export interface ScoutRunRecord {
 	toolCallCount: number;
 	durationMs: number;
 	reportedToolNames?: string[];
+	footprint?: ScoutFootprint;
 	report: ScoutReport | null;
 	rawOutput?: string;
 	error?: string;

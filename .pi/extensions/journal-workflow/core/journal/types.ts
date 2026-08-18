@@ -53,7 +53,17 @@ export interface TurnPatch {
 }
 export type JournalLine = { kind: "turn"; seq: number; turn: TurnRecord } | { kind: "patch"; seq: number; patch: TurnPatch; extractedAt: string };
 export interface TaskBlockIndex { file: string; fromSeq: number; toSeq: number }
-export interface TaskMeta { taskId: string; projectKey: string; createdAt: string; updatedAt: string; outcome: TurnOutcome | null; turnCount: number; blocks: TaskBlockIndex[] }
+export interface TaskMeta {
+	taskId: string;
+	projectKey: string;
+	createdAt: string;
+	updatedAt: string;
+	outcome: TurnOutcome | null;
+	turnCount: number;
+	blocks: TaskBlockIndex[];
+	extractionPriority?: "normal" | "recovery";
+	pendingReason?: string;
+}
 export interface FailureRecord { timestamp: string; workflowId: string; stepIndex: number; observedResult: string; expect: string; escapeReason: string }
 export const BLOCK_TURN_LIMIT = 100;
 export const BLOCK_BYTE_LIMIT = 1024 * 1024;

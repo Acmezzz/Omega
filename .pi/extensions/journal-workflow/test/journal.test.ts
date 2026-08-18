@@ -80,6 +80,15 @@ describe("J1: fact-line writing", () => {
 		expect(result.meta?.turnCount).toBe(2);
 	});
 
+	it("workflow escape marks the task for recovery extraction", () => {
+		const taskDir = taskDirOf(root, "--G--try-agent-demo--", "task-recovery-1");
+		const writer = new JournalWriter(root, "--G--try-agent-demo--", "task-recovery-1");
+		writer.appendFailure({ workflowId: "l2-demo", stepIndex: 1, observedResult: "failure", expect: "success", escapeReason: "checkpoint" });
+		const meta = readTask(taskDir).meta;
+		expect(meta?.extractionPriority).toBe("recovery");
+		expect(meta?.pendingReason).toBe("workflow-escape-recovery");
+	});
+
 	it("skill usage markers in expanded user input are captured", async () => {
 		const fakePi = new FakePi();
 		wire(fakePi as unknown as ExtensionAPI, {

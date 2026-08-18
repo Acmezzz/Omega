@@ -7,7 +7,7 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExplorationAngle, ExplorationBudget, PriorResolution, ScoutReport, ScoutRunRecord, TaskBrief } from "./core/types.ts";
+import type { ExplorationAngle, ExplorationBudget, PriorResolution, ScoutFootprint, ScoutReport, ScoutRunRecord, TaskBrief } from "./core/types.ts";
 import { parseScoutReport, makePacket } from "./core/packet.ts";
 import { buildScoutPrompt } from "./core/prompts.ts";
 import type { ScoutRole } from "./core/roles.ts";
@@ -36,6 +36,7 @@ interface ChildResult {
 	stderr: string;
 	toolCallCount: number;
 	toolNames: string[];
+	footprint: ScoutFootprint;
 	aborted: boolean;
 	timedOut: boolean;
 	budgetExceeded: boolean;
@@ -74,14 +75,45 @@ async function writePrompt(prompt: string): Promise<{ dir: string; file: string 
 
 const ALLOWED_TOOLS = ["read", "grep", "find", "ls"] as const;
 
-function consumeJsonLine(line: string, state: { output: string; toolCallCount: number; toolNames: Set<string> }): void {
-		if (!line.trim()) return;
+function textOf(value: unknown): string | null {
+	if (typeof value === "string") return value;
+	if (!value || typeof value !== "object") return null;
+	const record = value as Record<string, unknown>;
+	if (typeof record.path === "string") return record.path;
+	if (typeof record.pattern === "string") return record.pattern;
+	if (typeof record.query === "string") return record.query;
+	if (typeof record.command === "string") return record.command;
+	return null;
+}
+
+function consumeJsonLine(line: string, state: { output: string; toolCallCount: number; toolNames: Set<string>; footprint: ScoutFootprint; openTools: Map<string, number> }): void {
+	if (!line.trim()) return;
 	try {
-			const event = JSON.parse(line) as Record<string, unknown>;
-			if (event.type === "tool_execution_start") {
-				state.toolCallCount += 1;
-				if (typeof event.toolName === "string") state.toolNames.add(event.toolName);
+		const event = JSON.parse(line) as Record<string, unknown>;
+		if (event.type === "tool_execution_start") {
+			state.toolCallCount += 1;
+			const toolName = typeof event.toolName === "string" ? event.toolName : "ls";
+			if (["read", "grep", "find", "ls"].includes(toolName)) {
+				const args = (event.args ?? event.input) as unknown;
+				const target = textOf(args);
+				const query = args && typeof args === "object" && typeof (args as Record<string, unknown>).pattern === "string"
+					? (args as Record<string, unknown>).pattern as string
+					: args && typeof args === "object" && typeof (args as Record<string, unknown>).query === "string"
+						? (args as Record<string, unknown>).query as string
+						: null;
+				const index = state.footprint.toolCalls.length;
+				state.footprint.toolCalls.push({ index, tool: toolName as "read" | "grep" | "find" | "ls", target, query, success: false });
+				state.openTools.set(typeof event.toolCallId === "string" ? event.toolCallId : `${index}`, index);
+				if (target && ["read", "find", "ls"].includes(toolName)) state.footprint.paths.push(target);
+				if (query) state.footprint.queries.push(query);
 			}
+			state.toolNames.add(toolName);
+		}
+		if (event.type === "tool_execution_end") {
+			const id = typeof event.toolCallId === "string" ? event.toolCallId : null;
+			const index = id ? state.openTools.get(id) : undefined;
+			if (index !== undefined) state.footprint.toolCalls[index].success = event.isError !== true;
+		}
 		if (event.type === "message_end") {
 			const message = event.message as { role?: string; content?: unknown } | undefined;
 			if (message?.role === "assistant" && Array.isArray(message.content)) {
@@ -117,7 +149,13 @@ function runChild(
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-			const state = { output: "", toolCallCount: 0, toolNames: new Set<string>() };
+			const state = {
+				output: "",
+				toolCallCount: 0,
+				toolNames: new Set<string>(),
+				footprint: { toolCalls: [], paths: [], queries: [] } as ScoutFootprint,
+				openTools: new Map<string, number>(),
+			};
 		let buffer = "";
 		let stderr = "";
 		let finished = false;
@@ -133,7 +171,7 @@ function runChild(
 			if (timer) clearTimeout(timer);
 			if (abortHandler && signal) signal.removeEventListener("abort", abortHandler);
 				if (buffer.trim()) consumeJsonLine(buffer, state);
-					resolve({ exitCode, output: state.output, stderr, toolCallCount: state.toolCallCount, toolNames: [...state.toolNames], aborted: wasAborted, timedOut, budgetExceeded });
+						resolve({ exitCode, output: state.output, stderr, toolCallCount: state.toolCallCount, toolNames: [...state.toolNames], footprint: state.footprint, aborted: wasAborted, timedOut, budgetExceeded });
 			};
 			const stop = (kind: "abort" | "timeout" | "budget"): void => {
 				if (kind === "abort") wasAborted = true;
@@ -147,18 +185,18 @@ function runChild(
 
 		child.stdout.on("data", (data: Buffer | string) => {
 			buffer += data.toString();
-			if (buffer.length > budget.maxScoutOutputChars * 3) {
-				stop("budget");
-				return;
-			}
+				if (budget.maxScoutOutputChars !== undefined && buffer.length > budget.maxScoutOutputChars * 3) {
+					stop("budget");
+					return;
+				}
 			const lines = buffer.split("\n");
 			buffer = lines.pop() ?? "";
 			for (const line of lines) {
 				consumeJsonLine(line, state);
-					if (state.toolCallCount >= budget.maxToolCallsPerScout) {
-					stop("budget");
-					return;
-				}
+						if (budget.maxToolCallsPerScout !== undefined && state.toolCallCount >= budget.maxToolCallsPerScout) {
+						stop("budget");
+						return;
+					}
 			}
 		});
 		child.stderr.on("data", (data: Buffer | string) => {
@@ -170,7 +208,7 @@ function runChild(
 			stderr += error.message;
 			finish(1);
 		});
-		if (budget.timeoutMsPerScout > 0) timer = setTimeout(() => stop("timeout"), budget.timeoutMsPerScout);
+			if (budget.timeoutMsPerScout !== undefined && budget.timeoutMsPerScout > 0) timer = setTimeout(() => stop("timeout"), budget.timeoutMsPerScout);
 		if (signal) {
 			abortHandler = () => stop("abort");
 			if (signal.aborted) abortHandler();
@@ -187,12 +225,14 @@ export async function runScout(options: ScoutRunOptions): Promise<ScoutRunRecord
 		const exposedPrior = options.role.contextExposure === "prior" ? options.prior : { kind: "none", reason: "详情对本 Scout 隐藏" } as PriorResolution;
 		const exposedPriorStatus = exposedPrior.kind;
 		promptFile = await writePrompt(buildScoutPrompt(options.role, options.brief, exposedPrior, exposedFocus));
-			const args = ["--mode", "json", "--no-session", "--thinking", "low", "--tools", ALLOWED_TOOLS.join(",")];
+				const args = ["--mode", "json", "--no-session", "--tools", ALLOWED_TOOLS.join(",")];
 			const ref = modelRef(options.model);
 			if (ref) args.push("--model", ref);
-			args.push("--append-system-prompt", promptFile.file, "-p", "开始一次有限的、只读的、开放式探索；根据 system 中的 TaskBrief 独立搜索并返回 JSON 报告。");
+			args.push("--append-system-prompt", promptFile.file, "-p", "开始一次广泛的、只读的、开放式探索；尽可能扩展思维空间，做简单验证并返回逻辑闭环的 JSON 报告。");
 			const child = await runChild(args, options.cwd, options.budget, options.signal, options.spawn);
-			const cappedOutput = child.output.slice(0, options.budget.maxScoutOutputChars);
+				const cappedOutput = options.budget.maxScoutOutputChars === undefined
+					? child.output
+					: child.output.slice(0, options.budget.maxScoutOutputChars);
 			let status: ScoutRunRecord["status"] = "completed";
 			if (child.timedOut) status = "timed_out";
 			else if (child.aborted) status = "aborted";
@@ -211,7 +251,8 @@ export async function runScout(options: ScoutRunOptions): Promise<ScoutRunRecord
 				toolCallCount: child.toolCallCount,
 				durationMs: Date.now() - started,
 				reportedToolNames: child.toolNames,
-				report,
+				footprint: child.footprint,
+				report: report ? { ...report, footprint: child.footprint } : null,
 				rawOutput: cappedOutput || undefined,
 				error: child.stderr || undefined,
 			};
@@ -227,6 +268,7 @@ export async function runScout(options: ScoutRunOptions): Promise<ScoutRunRecord
 				toolCallCount: 0,
 				durationMs: Date.now() - started,
 				reportedToolNames: [],
+				footprint: { toolCalls: [], paths: [], queries: [] },
 				report: null,
 				error: error instanceof Error ? error.message : String(error),
 			};

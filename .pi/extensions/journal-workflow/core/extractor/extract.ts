@@ -85,6 +85,7 @@ interface LoadedTask {
 	turns: TurnRecord[];
 	pendingDistill: number;
 	outcome: string | null;
+	extractionPriority: "normal" | "recovery";
 	failures: Array<Record<string, unknown>>;
 }
 
@@ -180,15 +181,16 @@ function loadTasks(journalsRoot: string, projectKey: string): LoadedTask[] {
 	for (const dir of listTasks(journalsRoot, projectKey)) {
 		const result = readTask(dir);
 		if (!result.meta) continue;
-		tasks.push({
-			taskId: result.meta.taskId,
-			turns: result.turns,
-			pendingDistill: result.turns.filter((t) => t.extractedAt === undefined).length,
-			outcome: result.meta.outcome,
-			failures: readFailureRecords(dir),
-		});
+			tasks.push({
+				taskId: result.meta.taskId,
+				turns: result.turns,
+				pendingDistill: result.turns.filter((t) => t.extractedAt === undefined).length,
+				outcome: result.meta.outcome,
+				extractionPriority: result.meta.extractionPriority ?? "normal",
+				failures: readFailureRecords(dir),
+			});
 	}
-	return tasks;
+	return tasks.sort((a, b) => Number(b.extractionPriority === "recovery") - Number(a.extractionPriority === "recovery"));
 }
 
 /** The workflow that guided a turn (from toolCall.workflowRef), if any. */

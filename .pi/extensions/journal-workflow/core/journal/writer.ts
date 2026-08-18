@@ -254,6 +254,10 @@ export class JournalWriter {
 			join(this.taskDir, "failures.jl"),
 			`${JSON.stringify({ timestamp: new Date().toISOString(), ...record })}\n`,
 		);
+		this.meta.extractionPriority = "recovery";
+		this.meta.pendingReason = "workflow-escape-recovery";
+		this.meta.updatedAt = new Date().toISOString();
+		this.writeMeta();
 	}
 
 	readFailures(): Array<Record<string, unknown>> {

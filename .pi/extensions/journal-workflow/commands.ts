@@ -11,6 +11,7 @@ import { JournalWriter, listTasks, readTask, taskDirOf } from "./core/journal/wr
 import { BackupReader } from "./core/journal/backup.ts";
 import { buildRestorePlan } from "./core/journal/restore.ts";
 import { checkProjectHealth } from "./core/health.ts";
+import { summarizeTrace, WorkflowTraceWriter } from "./core/trace.ts";
 import type { JournalWorkflowConfig } from "./config.ts";
 
 export interface CommandDeps {
@@ -90,7 +91,13 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 				notify("功能目录为空；请先运行 /wf-extract");
 				return;
 			}
-			notify(features.map((feature) => `${feature.label} (${feature.id})：${feature.description}\n  ${feature.entryIds.join("、") || "无条目"}`).join("\n"));
+				notify(features.map((feature) => {
+					const entries = feature.entryIds.map((id) => store.getEntry(id)).filter((entry): entry is NonNullable<typeof entry> => !!entry);
+					const usage = entries.reduce((sum, entry) => sum + entry.usage, 0);
+					const escapes = entries.reduce((sum, entry) => sum + entry.escapes, 0);
+					const evidence = entries.reduce((sum, entry) => sum + entry.evidence, 0);
+					return `${feature.label} (${feature.id})：${feature.description}\n  entries=${entries.length} usage=${usage} escapes=${escapes} escapeRate=${usage ? (escapes / usage).toFixed(2) : "0.00"} evidence=${evidence}\n  ${feature.entryIds.join("、") || "无条目"}`;
+				}).join("\n"));
 		},
 	});
 
@@ -115,7 +122,45 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 		},
 	});
 
-	pi.registerCommand("wf-health", {
+		pi.registerCommand("wf-trace", {
+			description: "只读查看 workflow execution trace",
+			handler: async (args, ctx) => {
+				const taskId = args.trim().split(/\s+/).find((token) => token && !token.startsWith("--"));
+				if (!taskId) { notify("用法：/wf-trace <task-id>"); return; }
+				const projectKey = deps.resolveProjectKey(ctx.cwd);
+				const trace = new WorkflowTraceWriter(taskDirOf(deps.config.journalsRoot, projectKey, taskId), false);
+				const events = trace.read();
+				notify(events.length > 0 ? [`wf-trace: ${projectKey}/${taskId}`, ...summarizeTrace(events)].join("\n") : `任务 ${taskId} 没有 workflow trace。`);
+			},
+		});
+
+		pi.registerCommand("wf-show", {
+			description: "只读查看 workflow 定义和步骤",
+			handler: async (args, _ctx) => {
+				const id = args.trim();
+				if (!id) { notify("用法：/wf-show <workflow-id>"); return; }
+				const store = WorkflowStore.load(deps.config.workflowsRoot);
+				const entry = store.getEntry(id);
+				const entity = entry ? store.getEntity(id) : undefined;
+				if (!entry || !entity) { notify(`找不到 workflow：${id}`); return; }
+				const steps = "steps" in entity ? entity.steps.map((step, index) => `${index}. ${step.intent} [${step.action?.tool ?? step.ref ?? "unknown"}]${step.expect ? ` checkpoint=${step.expect}` : ""}${step.alternative ? ` alternative=${step.alternative}` : ""}`).join("\n") : "该条目不是 L2 步骤 workflow。";
+				notify([`L${entry.level} ${entry.id} [${entry.status}]`, `intent=${entry.intent}`, `evidence=${entry.evidence} usage=${entry.usage} escapes=${entry.escapes}`, steps].join("\n"));
+			},
+		});
+
+		pi.registerCommand("wf-sources", {
+			description: "只读查看 workflow evidence 来源摘要",
+			handler: async (args, _ctx) => {
+				const id = args.trim();
+				if (!id) { notify("用法：/wf-sources <workflow-id>"); return; }
+				const store = WorkflowStore.load(deps.config.workflowsRoot);
+				const records = store.getEvidenceLedger().filter((record) => record.entryId === id);
+				if (records.length === 0) { notify(`workflow ${id} 没有 evidence 来源记录。`); return; }
+				notify([`workflow=${id}`, ...records.map((record) => `source=${String(record.source?.kind ?? "unknown")} recordedAt=${record.recordedAt}`)].join("\n"));
+			},
+		});
+
+		pi.registerCommand("wf-health", {
 		description: "只读检查 journal、backup、workflow 和 extraction 数据健康状态",
 		handler: async (args, ctx) => {
 			const tokens = args.trim().split(/\s+/).filter(Boolean);

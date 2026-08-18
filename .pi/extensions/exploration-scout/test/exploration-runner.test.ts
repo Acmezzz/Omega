@@ -58,8 +58,8 @@ describe("Scout runner", () => {
 			prior: { kind: "none", reason: "empty" },
 			budget: { ...DEFAULT_EXPLORATION_BUDGET, timeoutMsPerScout: 1_000 },
 			spawn: spawnScript([
-				JSON.stringify({ type: "tool_execution_start", toolName: "read" }),
-				JSON.stringify({ type: "tool_execution_end", toolName: "read" }),
+			JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/example.ts" } }),
+			JSON.stringify({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", isError: false }),
 				JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: report }] } }),
 			], capture),
 		});
@@ -67,10 +67,13 @@ describe("Scout runner", () => {
 		expect(result.status).toBe("completed");
 		expect(result.toolCallCount).toBe(1);
 		expect(result.report?.proposals[0]?.id).toBe("p1");
+		expect(result.footprint?.paths).toContain("src/example.ts");
+		expect(result.footprint?.toolCalls[0]).toMatchObject({ tool: "read", target: "src/example.ts", success: true });
 		expect(capture.args).toEqual(expect.arrayContaining([
-			"--mode", "json", "--no-session", "--thinking", "low", "--tools", "read,grep,find,ls",
+			"--mode", "json", "--no-session", "--tools", "read,grep,find,ls",
 			"--model", "fake/model", "--append-system-prompt",
 		]));
+		expect(capture.args).not.toContain("--thinking");
 	});
 
 	it("cancels and reports a tool-call budget breach", async () => {
