@@ -11,6 +11,8 @@ export interface SentMessage {
 export class FakePi {
 	handlers = new Map<string, Array<(event: never, ctx: never) => unknown>>();
 	sentMessages: SentMessage[] = [];
+	userMessages: Array<{ content: string; options?: { deliverAs?: string; expandPromptTemplates?: boolean } }> = [];
+	appendedEntries: Array<{ customType: string; data: unknown }> = [];
 	commands: Array<{ name: string; options: unknown }> = [];
 	tools: unknown[] = [];
 
@@ -22,6 +24,14 @@ export class FakePi {
 
 	sendMessage(content: unknown, options?: SentMessage["options"]): void {
 		this.sentMessages.push({ content, options });
+	}
+
+	sendUserMessage(content: string, options?: { deliverAs?: string; expandPromptTemplates?: boolean }): void {
+		this.userMessages.push({ content, options });
+	}
+
+	appendEntry(customType: string, data?: unknown): void {
+		this.appendedEntries.push({ customType, data });
 	}
 
 	registerCommand(name: string, options: unknown): void {

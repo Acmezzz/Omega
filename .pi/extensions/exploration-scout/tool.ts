@@ -13,6 +13,7 @@ import { runScouts, type ScoutRunOptions } from "./runner.ts";
 
 export interface ExplorationToolDeps {
 	llm: LlmClient;
+	isExplorationEnabled?: () => boolean;
 	getBudget?: () => Partial<ExplorationBudget> | undefined;
 	getCurrentUserInput?: () => string | null;
 	priorProvider?: WorkflowPriorProvider;
@@ -54,6 +55,7 @@ export function createExploreSpaceTool(deps: ExplorationToolDeps) {
 		promptSnippet: "Explore candidate solution space with read-only independent scouts when the task is novel or ambiguous",
 		parameters: exploreSchema, executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (deps.isExplorationEnabled && !deps.isExplorationEnabled()) return { content: [{ type: "text", text: "Scout 模式未开启。请先使用 /exploration-scout 开启。" }], details: { status: "exploration_disabled" } };
 			const validation = validateTaskBrief(params.taskBrief);
 			if (!validation.valid || !validation.brief) return { content: [{ type: "text", text: `TaskBrief 无效：${validation.reasons.join("；")}` }], details: { status: "invalid_brief", reasons: validation.reasons } };
 			const budget = mergedBudget(deps);
@@ -85,6 +87,7 @@ export function createSelectExplorationTool(deps: ExplorationToolDeps) {
 		promptSnippet: "Record the main agent's selected or combined exploration direction",
 		parameters: selectSchema, executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (deps.isExplorationEnabled && !deps.isExplorationEnabled()) return { content: [{ type: "text", text: "Scout 模式未开启。请先使用 /exploration-scout 开启。" }], details: { status: "exploration_disabled" } };
 			const currentRound = deps.getCurrentRound?.();
 			if (!currentRound) return { content: [{ type: "text", text: "当前没有可供选择的探索轮次。" }], details: { status: "no_current_round" } };
 			const proposalIds = new Set(currentRound.packet.runs.flatMap((run) => run.report?.proposals.map((proposal) => proposal.id) ?? []));

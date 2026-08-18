@@ -6,7 +6,7 @@ import type { ExplorationBudget } from "./core/types.ts";
 export interface ExplorationScoutConfig {
 	enabled: boolean;
 	explorationsRoot: string;
-	policy: "explore-first" | "off";
+	policy: "manual" | "explore-first" | "off";
 	/** Reserved for a future dedicated aux model; currently the session model is used. */
 	auxModel?: string;
 	budget?: Partial<ExplorationBudget>;
@@ -21,7 +21,7 @@ function resolveConfiguredPath(value: string, agentDir: string): string {
 }
 
 export function loadConfig(agentDir: string = defaultAgentDir()): ExplorationScoutConfig {
-	const defaults: ExplorationScoutConfig = { enabled: true, explorationsRoot: join(agentDir, "explorations"), policy: "explore-first" };
+	const defaults: ExplorationScoutConfig = { enabled: true, explorationsRoot: join(agentDir, "explorations"), policy: "manual" };
 	const path = join(agentDir, "settings.json");
 	if (!existsSync(path)) return envOverrides(defaults);
 	try {

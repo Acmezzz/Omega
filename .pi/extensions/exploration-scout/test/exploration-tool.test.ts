@@ -67,6 +67,12 @@ function fakeRuns(): ScoutRunRecord[] {
 }
 
 describe("explore_space tool", () => {
+		it("fails closed when manual Scout mode is disabled", async () => {
+			const tool = createExploreSpaceTool({ llm: new FakeLlm([]), isExplorationEnabled: () => false, runScouts: async () => fakeRuns() });
+			const result = await tool.execute("id", { taskBrief: brief, round: 1 }, undefined, undefined, { cwd: root, model: { provider: "fake", id: "model" } } as never);
+			expect((result.details as { status: string }).status).toBe("exploration_disabled");
+		});
+
 		it("rejects a duplicate or over-budget round", async () => {
 			const tool = createExploreSpaceTool({ llm: new FakeLlm([]), getBudget: () => ({ maxRoundsPerTask: 1 }), getRounds: () => [{ packet: { round: 1 } } as never], runScouts: async () => fakeRuns() });
 			const result = await tool.execute("id", { taskBrief: brief, round: 1 }, undefined, undefined, { cwd: root, model: { provider: "fake", id: "model" } } as never);
@@ -94,6 +100,12 @@ describe("explore_space tool", () => {
 });
 
 describe("select_exploration tool", () => {
+		it("fails closed when manual Scout mode is disabled", async () => {
+			const tool = createSelectExplorationTool({ llm: new FakeLlm([]), isExplorationEnabled: () => false, getCurrentRound: () => ({ packet: { runs: fakeRuns() } } as never) });
+			const result = await tool.execute("id", { selectedProposalIds: ["p1"] }, undefined, undefined, {} as never);
+			expect((result.details as { status: string }).status).toBe("exploration_disabled");
+		});
+
 		it("rejects proposal IDs outside the current round", async () => {
 			const tool = createSelectExplorationTool({ llm: new FakeLlm([]), getCurrentRound: () => ({ packet: { runs: fakeRuns() } } as never) });
 			const result = await tool.execute("id", { selectedProposalIds: ["missing"] }, undefined, undefined, {} as never);

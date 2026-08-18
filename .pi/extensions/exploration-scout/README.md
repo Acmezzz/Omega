@@ -24,7 +24,7 @@
 
 Scout 只返回未验证的 observation、hypothesis、proposal、unknown、反证和限制。它不声称任务完成，也不把候选当作执行约束。
 
-默认 `policy` 为 `explore-first`。插件只在 `before_agent_start` 追加协议，是否调用 `explore_space` 由主 Agent 根据任务新颖性、歧义和风险决定。
+默认 `policy` 为 `manual`。用户通过 `/exploration-scout` 开启或关闭 Scout 模式；只有模式开启时，插件才在 `before_agent_start` 追加探索协议。显式配置 `policy: "explore-first"` 仍保留旧的自动协议行为，`off` 永久禁用。
 
 TaskBrief 可以包含：
 
@@ -40,6 +40,20 @@ TaskBrief 可以包含：
 TaskBrief 不能预先写入解决方案、推荐文件、工具序列或根因断言。所有这些字段都会经过方案偏置检查。
 
 ## 2. 工具
+
+### `/exploration-scout`
+
+用户控制 Scout 模式，不直接执行候选方案：
+
+```text
+/exploration-scout          切换模式
+/exploration-scout on       开启模式
+/exploration-scout off      关闭模式
+/exploration-scout status   查看状态
+/exploration-scout <文本>   开启模式，并把文本作为 follow-up 交给主 Agent
+```
+
+命令会等待当前 Agent 回合空闲后再切换；模式状态保存在当前 session 的 custom entry 中。命令参数只是用户提供的非可信任务描述，仍由主 Agent 形成并校验中立 TaskBrief。命令不会直接启动 Scout、执行候选方案或激活 workflow。
 
 ### `explore_space`
 
@@ -162,7 +176,7 @@ best / rank / confidence / recommendation
   "explorationScout": {
     "enabled": true,
     "explorationsRoot": "~/.pi/agent/explorations",
-    "policy": "explore-first",
+    "policy": "manual",
     "budget": {
       "maxScouts": 3,
       "maxRoundsPerTask": 2
@@ -172,7 +186,7 @@ best / rank / confidence / recommendation
 ```
 
 - `enabled`：是否加载插件；
-- `policy`：`explore-first` 或 `off`；
+- `policy`：`manual`、`explore-first` 或 `off`；默认 `manual`。`manual` 只能由 `/exploration-scout` 开启，`explore-first` 保留兼容的自动协议行为，`off` 永久禁用；
 - `budget`：覆盖默认探索预算；
 - `PI_EXPLORATION_DISABLE=1`：临时禁用插件。
 
@@ -216,7 +230,7 @@ interface WorkflowPriorProvider {
   },
   "explorationScout": {
     "enabled": true,
-    "policy": "explore-first"
+    "policy": "manual"
   }
 }
 ```
@@ -244,7 +258,7 @@ interface WorkflowPriorProvider {
 ```bash
 cd .pi/extensions/exploration-scout
 npx tsc -p tsconfig.check.json # strict 类型检查
-npx vitest run                 # 18 项通过
+npx vitest run                 # 25 项通过
 ```
 
 核心入口：
