@@ -33,13 +33,17 @@ export function wire(pi: ExtensionAPI, deps: ScoutWireDeps): void {
 	let currentRound: ScoutRoundRecord | null = null;
 	const llm = deps.llm ?? makeCtxLlm(() => ctx);
 
-	const ensureJournal = (next: HandlerCtx): ExplorationJournal | null => {
-		if (journal) return journal;
-		const taskId = next.sessionManager?.getHeader?.()?.id;
-		if (!taskId) return null;
-		journal = new ExplorationJournal(deps.config.explorationsRoot, projectKeyFromCwd(next.cwd), taskId);
-		return journal;
-	};
+		const ensureJournal = (next: HandlerCtx): ExplorationJournal | null => {
+			const taskId = next.sessionManager?.getHeader?.()?.id;
+			if (!taskId) return null;
+			const projectKey = projectKeyFromCwd(next.cwd);
+			if (journal && journal.taskId === taskId && journal.projectKey === projectKey) return journal;
+			journal = new ExplorationJournal(deps.config.explorationsRoot, projectKey, taskId);
+			currentRound = null;
+			currentUserInput = null;
+			return journal;
+		};
+
 
 	pi.on("session_start", (_event, raw) => { ctx = raw as HandlerCtx; ensureJournal(ctx); });
 	pi.on("message_end", (event: { message?: { role?: string; content?: unknown } }, raw) => {
@@ -54,10 +58,13 @@ export function wire(pi: ExtensionAPI, deps: ScoutWireDeps): void {
 		return { systemPrompt: `${event.systemPrompt}\n\n<exploration_protocol>\n${buildMainExplorationProtocol()}\n</exploration_protocol>` };
 	});
 
-	registerExplorationTools(pi, {
-		llm,
-		getBudget: () => deps.config.budget,
-		getCurrentUserInput: () => currentUserInput,
+		registerExplorationTools(pi, {
+			llm,
+			getBudget: () => deps.config.budget,
+			getCurrentUserInput: () => currentUserInput,
+			getRounds: () => journal?.readRounds() ?? [],
+			getCurrentRound: () => currentRound,
+
 		...deps.exploration,
 		onRound: ({ brief, round, packet, budget }) => {
 			const taskId = ctx?.sessionManager?.getHeader?.()?.id ?? "unknown";

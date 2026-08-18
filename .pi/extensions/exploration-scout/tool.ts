@@ -4,7 +4,7 @@ import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-
 import type { LlmClient } from "../_shared/llm.ts";
 import type { WorkflowPriorProvider } from "../_shared/interop.ts";
 import { validateTaskBrief } from "./core/brief.ts";
-import type { ExplorationBudget, ExplorationSelection, ScoutRunRecord, TaskBrief } from "./core/types.ts";
+import type { ExplorationBudget, ExplorationSelection, ScoutRunRecord, ScoutRoundRecord, TaskBrief } from "./core/types.ts";
 import { DEFAULT_EXPLORATION_BUDGET } from "./core/types.ts";
 import { resolvePrior } from "./core/prior.ts";
 import { makePacket } from "./core/packet.ts";
@@ -19,6 +19,8 @@ export interface ExplorationToolDeps {
 	runScouts?: (options: Omit<ScoutRunOptions, "role"> & { roles: ScoutRole[] }) => Promise<ScoutRunRecord[]>;
 	onRound?: (input: { brief: TaskBrief; round: number; packet: ReturnType<typeof makePacket>; budget: ExplorationBudget }) => void;
 	onSelection?: (selection: ExplorationSelection, ctx: ExtensionContext) => string | void;
+	getRounds?: () => ScoutRoundRecord[];
+	getCurrentRound?: () => ScoutRoundRecord | null;
 }
 
 const briefSchema = Type.Object({
@@ -46,6 +48,11 @@ export function createExploreSpaceTool(deps: ExplorationToolDeps) {
 			const validation = validateTaskBrief(params.taskBrief);
 			if (!validation.valid || !validation.brief) return { content: [{ type: "text", text: `TaskBrief 无效：${validation.reasons.join("；")}` }], details: { status: "invalid_brief", reasons: validation.reasons } };
 			const budget = mergedBudget(deps);
+			const requestedRound = params.round ?? 1;
+			const rounds = deps.getRounds?.() ?? [];
+			if (requestedRound > budget.maxRoundsPerTask || rounds.some((record) => record.packet.round === requestedRound)) {
+				return { content: [{ type: "text", text: `探索轮次 ${requestedRound} 已达到任务预算或已经执行过。` }], details: { status: "round_budget_exceeded", round: requestedRound } };
+			}
 			const brief = { ...validation.brief, rawUserInput: deps.getCurrentUserInput?.() ?? validation.brief.rawUserInput };
 			const prior = await resolvePrior(brief.rawUserInput, deps.priorProvider);
 			const roles = selectScoutRoles(budget.maxScouts, params.includeCounterexample === true);
@@ -64,7 +71,12 @@ export function createSelectExplorationTool(deps: ExplorationToolDeps) {
 		promptSnippet: "Record the main agent's selected or combined exploration direction",
 		parameters: selectSchema, executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const selection: ExplorationSelection = { selectedProposalIds: params.selectedProposalIds, combinedPlanSummary: params.combinedPlanSummary ?? null, reason: params.reason ?? null };
+			const currentRound = deps.getCurrentRound?.();
+			if (!currentRound) return { content: [{ type: "text", text: "当前没有可供选择的探索轮次。" }], details: { status: "no_current_round" } };
+			const proposalIds = new Set(currentRound.packet.runs.flatMap((run) => run.report?.proposals.map((proposal) => proposal.id) ?? []));
+				const selected = [...new Set(params.selectedProposalIds)];
+				if (selected.length !== params.selectedProposalIds.length || selected.some((id) => !id.trim() || !proposalIds.has(id))) return { content: [{ type: "text", text: "选择中包含重复、空白或当前轮次不存在的 proposal ID。" }], details: { status: "invalid_selection" } };
+			const selection: ExplorationSelection = { selectedProposalIds: selected, combinedPlanSummary: params.combinedPlanSummary ?? null, reason: params.reason ?? null };
 			const selectionMessage = deps.onSelection?.(selection, ctx);
 			return { content: [{ type: "text", text: selectionMessage ?? "已记录探索收敛结果。现在请由主 Agent 正式执行并用外部结果验证。" }], details: { selection } };
 		},

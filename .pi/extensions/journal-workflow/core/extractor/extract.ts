@@ -231,12 +231,14 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 			.map((turn) => turn.userInput);
 		const proposed = await proposeL1(pattern, exampleTasks, opts.llm);
 		if (!proposed) continue;
-		const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm);
+			const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm, 1);
 			if (similarTo) {
-				if (!opts.dryRun) opts.store.mergeInto({ ...proposed, variants: [] } as unknown as L1Template, similarTo, 1);
-				report.mergedInto.push(similarTo);
-				catalogEntryIds.add(similarTo);
-				continue;
+				const merged = opts.dryRun ? opts.store.getEntry(similarTo) : opts.store.mergeInto({ ...proposed, variants: [] } as unknown as L1Template, similarTo, 1);
+				if (merged) {
+					report.mergedInto.push(similarTo);
+					catalogEntryIds.add(similarTo);
+					continue;
+				}
 			}
 
 			if (!opts.dryRun) {
@@ -282,17 +284,25 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 			}));
 			const proposed: ProposedL2 | null = await proposeWorkflow(summaries, opts.llm);
 			if (proposed) {
-				const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm);
-				const entity: L2Workflow = {
+					const similarTo = await judgeSimilarity(proposed.intent, opts.store.getRegistry(), opts.llm, 2);
+					const entity: L2Workflow = {
+
 					id: proposed.id,
 					intent: proposed.intent,
 					steps: stepsFromProposal(proposed),
 				};
-					if (similarTo) {
-						if (!opts.dryRun) opts.store.mergeInto(entity, similarTo, 2);
-						report.mergedInto.push(similarTo);
-						catalogEntryIds.add(similarTo);
+						if (similarTo) {
+							const merged = opts.dryRun ? opts.store.getEntry(similarTo) : opts.store.mergeInto(entity, similarTo, 2);
+							if (merged) {
+								report.mergedInto.push(similarTo);
+								catalogEntryIds.add(similarTo);
+							} else {
+								if (!opts.dryRun) opts.store.upsertEntity(entity, 2);
+								report.l2Created.push(proposed.id);
+								catalogEntryIds.add(proposed.id);
+							}
 					} else {
+
 						if (!opts.dryRun) opts.store.upsertEntity(entity, 2);
 						report.l2Created.push(proposed.id);
 						catalogEntryIds.add(proposed.id);

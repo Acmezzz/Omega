@@ -46,7 +46,17 @@ export function validateTaskBrief(input: unknown): BriefValidation {
 	const reasons: string[] = [];
 	if (brief.objective.trim().length < 3) reasons.push("objective 太短");
 	if (brief.deliverable.trim().length < 2) reasons.push("deliverable 太短");
-	for (const field of [brief.objective, brief.deliverable, ...brief.acceptanceCriteria, ...brief.unknowns]) {
+	for (const field of [
+		brief.rawUserInput,
+		brief.objective,
+		brief.deliverable,
+		...brief.acceptanceCriteria,
+		...brief.constraints,
+		...brief.knownFacts.flatMap((fact) => [fact.fact, fact.source]),
+		...brief.unknowns,
+		...brief.relevantPaths,
+		...brief.forbiddenAssumptions,
+	]) {
 		if (SOLUTION_FIELD_RE.test(field)) {
 			reasons.push("TaskBrief 包含疑似方案性语言，应只描述目标、事实和未知");
 			break;

@@ -125,11 +125,25 @@ describe("E3: tracker state machine", () => {
 		expect((actions[0] as { message: string | null }).message).toContain("l1-locate-symbol");
 	});
 
-	it("null outcome (validator unavailable) is treated as pass", () => {
-		const tracker = makeTracker([{ intent: "复现", action: { tool: "bash", argsTemplate: "x" }, expect: "y", retries: 2 }]);
-		const actions = tracker.handleCheckpoint(null, "");
-		expect(actions[0].type).toBe("advance");
+	it("null outcome keeps the checkpoint active", () => {
+			const tracker = makeTracker([{ intent: "复现", action: { tool: "bash", argsTemplate: "x" }, expect: "y", retries: 2 }]);
+			const actions = tracker.handleCheckpoint(null, "");
+			expect(actions[0].type).toBe("retry-hint");
+			expect(tracker.currentStepIndex).toBe(0);
+		});
+
+	it("advances non-checkpoint steps and deduplicates tool calls", () => {
+		const tracker = makeTracker([
+			{ intent: "定位", action: { tool: "grep", argsTemplate: "x" } },
+			{ intent: "修改", action: { tool: "edit", argsTemplate: "y" } },
+		]);
+		const first = tracker.recordToolCompletion("call-1", "grep");
+		expect(first.actions[0].type).toBe("advance");
+		expect(tracker.currentStepIndex).toBe(1);
+		const duplicate = tracker.recordToolCompletion("call-1", "edit");
+		expect(duplicate.matched).toBe(false);
 	});
+
 
 	it("retries then escapes with a hard directive and failure record", () => {
 		const tracker = makeTracker([

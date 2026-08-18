@@ -222,13 +222,18 @@ export class WorkflowStore {
 		return entry;
 	}
 
-	/** Merge by intent similarity: caller supplies the existing id to merge into. */
+	/** Merge a candidate into a same-level canonical entry and persist its entity content. */
 	mergeInto(newEntity: LibraryEntity, existingId: string, level: 1 | 2 | 3): RegistryEntry | undefined {
 		const target = this.getEntry(existingId);
 		if (!target) return this.upsertEntity(newEntity, level);
+		if (target.level !== level) return undefined;
+		const canonical = { ...newEntity, id: existingId } as LibraryEntity;
 		target.evidence += 1;
+		target.intent = canonical.intent;
+		target.excludes = canonical.excludes;
 		target.updatedAt = new Date().toISOString();
 		if (target.status === "probation" && target.evidence >= PROMOTION_EVIDENCE) target.status = "active";
+		this.writeEntity(canonical, target.level);
 		this.save();
 		return target;
 	}

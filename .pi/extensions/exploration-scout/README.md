@@ -212,7 +212,7 @@ PI_EXPLORATION_DISABLE=1
 
 ```bash
 cd .pi/extensions/exploration-scout
-npx vitest run                 # 15 项通过
+npx vitest run                 # 18 项通过
 npx tsc -p tsconfig.check.json # strict 类型检查
 ```
 

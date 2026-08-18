@@ -219,14 +219,17 @@ export async function judgeSimilarity(
 	candidateIntent: string,
 	registry: RegistryEntry[],
 	llm: LlmClient,
+	candidateLevel?: 1 | 2 | 3,
 ): Promise<string | null> {
-	if (registry.length === 0) return null;
+	const comparable = candidateLevel === undefined ? registry : registry.filter((entry) => entry.level === candidateLevel);
+	if (comparable.length === 0) return null;
 	try {
 		const text = await llm.complete({
 			systemPrompt: JUDGE_SYSTEM_PROMPT,
 			userPayload: JSON.stringify({
 				candidate: candidateIntent,
-				registry: registry.map((e) => ({ id: e.id, intent: e.intent, level: e.level })),
+				candidateLevel,
+				registry: comparable.map((e) => ({ id: e.id, intent: e.intent, level: e.level })),
 			}),
 			maxTokens: 100,
 		});
@@ -234,7 +237,8 @@ export async function judgeSimilarity(
 		if (!parsed || typeof parsed !== "object") return null;
 		const similarTo = (parsed as Record<string, unknown>).similarTo;
 		if (typeof similarTo !== "string") return null;
-		return registry.some((e) => e.id === similarTo) ? similarTo : null;
+			return comparable.some((e) => e.id === similarTo) ? similarTo : null;
+
 	} catch {
 		return null;
 	}

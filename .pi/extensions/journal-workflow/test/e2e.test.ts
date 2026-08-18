@@ -187,9 +187,11 @@ describe("S1: success path (checkpoints pass → evidence grows)", () => {
 			await fakePi.emit("tool_execution_end", toolPayload(id, tool, "ok"), ctx);
 			await drain(runtime);
 		}
-		expect(fakePi.sentMessages).toHaveLength(1);
+			expect(fakePi.sentMessages.length).toBeGreaterThan(1);
+			expect(fakePi.sentMessages.every((m) => m.options?.deliverAs === "steer")).toBe(true);
+			expect(fakePi.sentMessages.some((m) => messageText(m).includes("进入下一步"))).toBe(true);
 
-		// Final verification checkpoint passes → tracker completes (advance with null message)
+			// Final verification checkpoint passes → tracker completes (advance with null message)
 		await fakePi.emit("tool_execution_start", { toolCallId: "s5", toolName: "bash", args: {} }, ctx);
 		await fakePi.emit("tool_execution_end", toolPayload("s5", "bash", "all passing"), ctx);
 		await drain(runtime);

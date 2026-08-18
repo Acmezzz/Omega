@@ -8,7 +8,7 @@ export function explorationTaskDir(root: string, projectKey: string, taskId: str
 
 export class ExplorationJournal {
 	private readonly dir: string;
-	constructor(root: string, private readonly projectKey: string, private readonly taskId: string) {
+	constructor(root: string, readonly projectKey: string, readonly taskId: string) {
 		this.dir = explorationTaskDir(root, projectKey, taskId);
 		mkdirSync(this.dir, { recursive: true });
 	}

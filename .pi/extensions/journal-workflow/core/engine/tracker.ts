@@ -1,14 +1,6 @@
 /**
  * EngineTracker: per-session workflow execution state machine.
- * Pure decision logic — the adapter feeds checkpoint outcomes (from the
- * validator) and executes the returned actions (steer messages, escape).
- *
- * Policy:
- * - checkpoint pass → advance to the next step (render its detail if new)
- * - checkpoint fail → retry hint while retries budget remains
- * - budget exhausted → alternative branch if present, else ESCAPE
- *   (hard instruction + failure record; free mode takes over unconditionally)
- * - validator unavailable (null outcome) → treated as pass (宁松勿紧)
+ * The adapter feeds completed tool calls and checkpoint outcomes.
  */
 import type { Step, L1Template } from "../library/types.ts";
 
@@ -32,8 +24,13 @@ export type EngineAction =
 	| { type: "escape"; message: string; failure: EscapeFailure };
 
 export interface TrackerDeps {
-	/** Resolve an L1 template by id (for step details and alternatives). */
 	getL1: (id: string) => L1Template | undefined;
+}
+
+export interface ToolCompletion {
+	matched: boolean;
+	needsCheckpoint: boolean;
+	actions: EngineAction[];
 }
 
 export const ESCAPE_DIRECTIVE =
@@ -45,33 +42,28 @@ export class EngineTracker {
 	private readonly deps: TrackerDeps;
 	private readonly retryCounts = new Map<number, number>();
 	private readonly expanded = new Set<string>();
+	private readonly seenToolCallIds = new Set<string>();
+	private readonly completedToolCounts = new Map<string, number>();
 	private currentIndex = 0;
 	private escaped = false;
+	private alternativeTools: string[] | null = null;
+	private alternativeId: string | null = null;
 
-	constructor(workflowId: string, steps: Step[], deps: TrackerDeps) {
+	constructor(workflowId: string, steps: Step[], deps: TrackerDeps, startIndex = 0) {
 		this.workflowId = workflowId;
 		this.steps = steps;
 		this.deps = deps;
+		this.currentIndex = Math.max(0, Math.min(startIndex, steps.length));
 	}
 
-	get escapedFlag(): boolean {
-		return this.escaped;
-	}
+	get escapedFlag(): boolean { return this.escaped; }
+	get active(): boolean { return !this.escaped && this.currentIndex < this.steps.length; }
+	get completed(): boolean { return !this.escaped && this.currentIndex >= this.steps.length; }
+	get currentStepIndex(): number { return this.currentIndex; }
+	get currentStep(): Step | undefined { return this.steps[this.currentIndex]; }
 
-	get active(): boolean {
-		return !this.escaped && this.currentIndex < this.steps.length;
-	}
-
-	get currentStepIndex(): number {
-		return this.currentIndex;
-	}
-
-	get currentStep(): Step | undefined {
-		return this.steps[this.currentIndex];
-	}
-
-	/** Tools that the current step is expected to call (for checkpoint matching). */
 	currentStepTools(): string[] {
+		if (this.alternativeTools) return [...this.alternativeTools];
 		const step = this.currentStep;
 		if (!step) return [];
 		if (step.ref) {
@@ -81,79 +73,71 @@ export class EngineTracker {
 		return step.action ? [step.action.tool] : [];
 	}
 
-	hasCheckpointAt(index: number): boolean {
-		const step = this.steps[index];
-		return !!step?.expect;
+	hasCheckpointAt(index: number): boolean { return !!this.steps[index]?.expect; }
+	markExpanded(l1Id: string): void { this.expanded.add(l1Id); }
+	isExpanded(l1Id: string): boolean { return this.expanded.has(l1Id); }
+
+	/** Consume one completed tool call. A step advances only after its expected tool sequence is complete. */
+	recordToolCompletion(toolCallId: string, toolName: string): ToolCompletion {
+		if (!this.active || this.seenToolCallIds.has(toolCallId)) return { matched: false, needsCheckpoint: false, actions: [] };
+		const expected = this.currentStepTools();
+		if (!expected.includes(toolName)) return { matched: false, needsCheckpoint: false, actions: [] };
+		this.seenToolCallIds.add(toolCallId);
+		this.completedToolCounts.set(toolName, (this.completedToolCounts.get(toolName) ?? 0) + 1);
+		const required = new Map<string, number>();
+		for (const tool of expected) required.set(tool, (required.get(tool) ?? 0) + 1);
+		const complete = [...required].every(([tool, count]) => (this.completedToolCounts.get(tool) ?? 0) >= count);
+		if (!complete) return { matched: true, needsCheckpoint: false, actions: [] };
+		if (this.currentStep?.expect) return { matched: true, needsCheckpoint: true, actions: [] };
+		return { matched: true, needsCheckpoint: false, actions: this.advanceStep() };
 	}
 
-	/** Mark an L1 as expanded (dedup: later references don't re-render details). */
-	markExpanded(l1Id: string): void {
-		this.expanded.add(l1Id);
-	}
-
-	isExpanded(l1Id: string): boolean {
-		return this.expanded.has(l1Id);
-	}
-
-	/**
-	 * Feed a checkpoint outcome for the current step.
-	 * `observedResult` is the raw result text (used in the failure record).
-	 */
+	/** Feed a checkpoint result for the already-completed current step. */
 	handleCheckpoint(outcome: CheckpointOutcome | null, observedResult: string): EngineAction[] {
 		if (!this.active) return [];
 		const step = this.currentStep;
 		const index = this.currentIndex;
 		const expect = step?.expect ?? "";
-		// 宁松勿紧: validator unavailable → pass
-		if (!outcome || outcome.satisfied) {
-			this.currentIndex += 1;
-			const next = this.renderNextStepDetail();
-			return [{ type: "advance", message: next }];
+		if (outcome === null) {
+			this.resetToolProgress();
+			return [{ type: "retry-hint", message: "检查点验证不可用，暂不推进工作流；请重试当前步骤。" }];
 		}
+		if (outcome.satisfied) return this.advanceStep();
+		this.resetToolProgress();
 		const retries = step?.retries ?? 2;
 		const used = (this.retryCounts.get(index) ?? 0) + 1;
 		this.retryCounts.set(index, used);
 		if (used < retries) {
-			return [
-				{
-					type: "retry-hint",
-					message: `检查点未通过：${outcome.reason}。请调整参数或换一种做法后重试本步骤。`,
-				},
-			];
+			return [{ type: "retry-hint", message: `检查点未通过：${outcome.reason}。请调整参数或换一种做法后重试本步骤。` }];
 		}
 		if (step?.alternative) {
 			const alt = step.alternative;
-			this.retryCounts.set(index, 0);
-			const altDetail = this.renderL1(alt);
-			return [
-				{
-					type: "switch-alternative",
-					message: `主路径在"${step.intent}"上连续失败（原因：${outcome.reason}）。切换到备选方案 ${alt}：\n${altDetail}`,
-					alternativeId: alt,
-				},
-			];
+			const l1 = this.deps.getL1(alt);
+			if (l1) {
+				this.alternativeId = alt;
+				this.alternativeTools = l1.calls.map((call) => call.tool);
+				this.retryCounts.set(index, 0);
+				return [{ type: "switch-alternative", message: `主路径在"${step.intent}"上连续失败（原因：${outcome.reason}）。切换到备选方案 ${alt}：\n${this.renderL1(alt)}`, alternativeId: alt }];
+			}
 		}
 		this.escaped = true;
-		return [
-			{
-				type: "escape",
-				message: `工作流 ${this.workflowId} 在步骤 ${index + 1}（${step?.intent ?? "?"}）失效：${outcome.reason}。${ESCAPE_DIRECTIVE}`,
-				failure: {
-					workflowId: this.workflowId,
-					stepIndex: index,
-					expect,
-					observedResult,
-					escapeReason: outcome.reason,
-				},
-			},
-		];
+		return [{ type: "escape", message: `工作流 ${this.workflowId} 在步骤 ${index + 1}（${step?.intent ?? "?"}）失效：${outcome.reason}。${ESCAPE_DIRECTIVE}`, failure: { workflowId: this.workflowId, stepIndex: index, expect, observedResult, escapeReason: outcome.reason } }];
 	}
 
-	/** Simulate a non-checkpoint step completion (pointer moves without validation). */
-	skipCurrentStep(): EngineAction[] {
+	skipCurrentStep(): EngineAction[] { return this.advanceStep(); }
+
+	private advanceStep(): EngineAction[] {
 		if (!this.active) return [];
 		this.currentIndex += 1;
+		this.retryCounts.delete(this.currentIndex - 1);
+		this.resetToolProgress();
+		this.alternativeTools = null;
+		this.alternativeId = null;
 		return [{ type: "advance", message: this.renderNextStepDetail() }];
+	}
+
+	private resetToolProgress(): void {
+		this.completedToolCounts.clear();
 	}
 
 	private renderNextStepDetail(): string | null {
@@ -163,9 +147,7 @@ export class EngineTracker {
 			this.expanded.add(next.ref);
 			return `进入下一步（${next.intent}），按模板 ${next.ref} 执行：\n${this.renderL1(next.ref)}`;
 		}
-		if (next.action) {
-			return `进入下一步（${next.intent}）：${next.action.tool} ${next.action.argsTemplate}`;
-		}
+		if (next.action) return `进入下一步（${next.intent}）：${next.action.tool} ${next.action.argsTemplate}`;
 		return null;
 	}
 

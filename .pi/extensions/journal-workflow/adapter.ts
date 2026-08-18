@@ -187,24 +187,40 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		}
 	};
 
-	const executeEngineActions = (actions: EngineAction[]): void => {
-		for (const action of actions) {
-			if (action.message !== null) steer(action.message);
-			if (action.type === "escape") {
-				writer?.appendFailure(action.failure);
-				if (activeEntry) getStore().bumpEscape(activeEntry.id);
-				tracker = null;
+		const resetEngine = (): void => {
+			tracker = null;
+			activeEntry = null;
+			writer?.setActiveWorkflow(null);
+		};
+
+		const executeEngineActions = (actions: EngineAction[]): void => {
+			for (const action of actions) {
+				if (action.message !== null) steer(action.message);
+				if (action.type === "escape") {
+					writer?.appendFailure(action.failure);
+					if (activeEntry) getStore().bumpEscape(activeEntry.id);
+					resetEngine();
+				}
 			}
-		}
-	};
+		};
+
 
 		const ensureWriter = (ctx: HandlerCtx): JournalWriter | null => {
 			const header = ctx.sessionManager?.getHeader?.();
 			if (!header?.id) return null;
 			const key = projectKeyFromCwd(ctx.cwd);
-			if (writer && writer.taskId === header.id && writer.projectKey === key) return writer;
+				if (writer && writer.taskId === header.id && writer.projectKey === key) return writer;
+				resetEngine();
+				prevContext = null;
+				lastUserMessage = null;
+				lastAssistantMessage = null;
+				lastAssistantText = null;
+				lastAssistantFragmentIds = undefined;
+				reasoningById.clear();
+				(matchCache as Map<string, RegistryEntry | null>).clear();
 				writer?.handleEvent({ kind: "session_shutdown" });
 				backup = null;
+
 				writer = new JournalWriter(deps.config.journalsRoot, key, header.id);
 
 			if (deps.config.backupEnabled !== false) {
@@ -285,26 +301,35 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		deps.afterEvent?.("tool_execution_start");
 	});
 
-	const activateWorkflow = (workflowId: string): string | null => {
-		const entry = getStore().getEntry(workflowId);
-		if (!entry || entry.status !== "active") return null;
-		activeEntry = entry;
-		getStore().bumpUsage(entry.id);
-		const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
-		const l2 = getStore().getL2(entry.id);
-		tracker = l2 ? new EngineTracker(l2.id, l2.steps, { getL1: (id) => getStore().getL1(id) }) : null;
-		writer?.setActiveWorkflow(entry.id);
-		return guidance || null;
-	};
+		const activateWorkflow = (workflowId: string): string | null => {
+			const entry = getStore().getEntry(workflowId);
+			if (!entry || entry.status !== "active") return null;
+			if (activeEntry?.id === entry.id && tracker?.active) return renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
+			resetEngine();
+			activeEntry = entry;
+			getStore().bumpUsage(entry.id);
+			const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
+			const l2 = getStore().getL2(entry.id);
+			tracker = l2 ? new EngineTracker(l2.id, l2.steps, { getL1: (id) => getStore().getL1(id) }) : null;
+			writer?.setActiveWorkflow(entry.id);
+			return guidance || null;
+		};
 
-	pi.on("before_agent_start", async (event: { prompt: string; systemPrompt: string }, ctxRaw: unknown) => {
-		currentCtx = ctxRaw as HandlerCtx;
-		tracker = null;
-		activeEntry = null;
-		if ((deps.config.workflowPolicy ?? "workflow-first") === "off") return undefined;
+
+		pi.on("before_agent_start", async (event: { prompt: string; systemPrompt: string }, ctxRaw: unknown) => {
+			currentCtx = ctxRaw as HandlerCtx;
+			if ((deps.config.workflowPolicy ?? "workflow-first") === "off") {
+				resetEngine();
+				return undefined;
+			}
+
 		try {
-			const entry = await matchWorkflow(event.prompt, getStore().getRegistry(), llm, matchCache, getStore().getCatalogFeatures());
-			if (!entry) return undefined;
+				const entry = await matchWorkflow(event.prompt, getStore().getRegistry(), llm, matchCache, getStore().getCatalogFeatures());
+				if (!entry) {
+					resetEngine();
+					return undefined;
+				}
+
 			const guidance = activateWorkflow(entry.id);
 			if (!guidance) return undefined;
 			return { systemPrompt: `${event.systemPrompt}\n\n<workflow_guidance>\n${guidance}\n</workflow_guidance>` };
@@ -346,20 +371,27 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 
 		});
 		// Engine checkpoint validation for the current step, fire-and-forget.
-		const t = tracker;
-		const step = t?.currentStep;
-		if (t && step?.expect && t.currentStepTools().includes(event.toolName)) {
-			const expect = step.expect;
-			const tracked: Promise<void> = checkExpect(expect, resultText, llm)
-				.then((outcome) => {
-					executeEngineActions(t.handleCheckpoint(outcome, resultText));
-				})
-				.catch(() => undefined)
-				.finally(() => {
-					pendingChecks.delete(tracked);
-				});
-			pendingChecks.add(tracked);
-		}
+				const t = tracker;
+				const step = t?.currentStep;
+				const completion = t?.recordToolCompletion(event.toolCallId, event.toolName);
+				if (t && completion?.matched && completion.needsCheckpoint && step?.expect) {
+					const expect = step.expect;
+
+					const tracked: Promise<void> = checkExpect(expect, resultText, llm)
+						.then((outcome) => {
+							executeEngineActions(t.handleCheckpoint(outcome, resultText));
+						})
+						.catch(() => {
+							executeEngineActions(t.handleCheckpoint(null, resultText));
+						})
+						.finally(() => {
+							pendingChecks.delete(tracked);
+						});
+					pendingChecks.add(tracked);
+				} else if (t && completion?.matched) {
+					executeEngineActions(completion.actions);
+				}
+
 		deps.afterEvent?.("tool_execution_end");
 	});
 
@@ -400,13 +432,13 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 			deps.afterEvent?.("agent_settled");
 			return;
 		}
-		w.handleEvent({ kind: "agent_settled" });
-		// Evolution: a completed turn under workflow guidance strengthens the entry.
-		if (tracker && activeEntry && !tracker.escapedFlag && w.flushedTurn?.outcome === "completed") {
-			getStore().bumpEvidence(activeEntry.id);
-		}
-		tracker = null;
-		activeEntry = null;
+			w.handleEvent({ kind: "agent_settled" });
+			// Evidence is earned only after every tracked step is complete.
+			if (tracker && activeEntry && tracker.completed && w.flushedTurn?.outcome === "completed") {
+				getStore().bumpEvidence(activeEntry.id);
+				resetEngine();
+			}
+
 		// Fire-and-forget distillation of the just-flushed fact turn.
 		const flushed = w.flushedTurn;
 		if (flushed) {

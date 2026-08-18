@@ -190,7 +190,7 @@ before_agent_start
 
 ```bash
 cd .pi/extensions/journal-workflow
-npx vitest run                 # 49 项通过，3 项 live 测试按条件跳过
+npx vitest run                 # 50 项通过，3 项 live 测试按条件跳过
 npx tsc -p tsconfig.check.json # strict 类型检查
 ```
 

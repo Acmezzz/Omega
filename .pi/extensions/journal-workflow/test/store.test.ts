@@ -73,10 +73,20 @@ describe("V1: store transitions", () => {
 		const store = WorkflowStore.createEmpty(join(root, "d"));
 		store.upsertEntity(sampleL1(), 1);
 		const before = store.getEntry("l1-sample")!.evidence;
-		const merged = store.mergeInto(sampleL1("l1-dup"), "l1-sample", 1);
-		expect(merged?.id).toBe("l1-sample");
-		expect(store.getEntry("l1-sample")!.evidence).toBe(before + 1);
-		// merge into unknown id falls back to a new probation entry
+			const candidate = sampleL1("l1-dup");
+			candidate.intent = "更新后的用途";
+			candidate.calls = [{ tool: "read", argsTemplate: "更新参数" }];
+			const merged = store.mergeInto(candidate, "l1-sample", 1);
+			expect(merged?.id).toBe("l1-sample");
+			expect(store.getEntry("l1-sample")!.evidence).toBe(before + 1);
+			expect(WorkflowStore.load(join(root, "d")).getL1("l1-sample")?.intent).toBe("更新后的用途");
+			expect(WorkflowStore.load(join(root, "d")).getL1("l1-sample")?.calls[0].tool).toBe("read");
+
+			const wrongLevel = store.mergeInto(sampleL2("l2-wrong"), "l1-sample", 2);
+			expect(wrongLevel).toBeUndefined();
+			expect(store.detectOrphans()).toEqual([]);
+			// merge into unknown id falls back to a new probation entry
+
 		const fallback = store.mergeInto(sampleL1("l1-fallback"), "l1-missing", 1);
 		expect(fallback?.status).toBe("probation");
 	});

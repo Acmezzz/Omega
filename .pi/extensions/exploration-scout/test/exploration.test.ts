@@ -17,7 +17,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 function brief() {
 	return {
-		rawUserInput: "分析这个失败测试并给出修复方案",
+		rawUserInput: "分析这个失败测试并确认结果",
 		objective: "理解失败测试对应的问题并形成可执行的修复方向",
 		deliverable: "一份经过验证的修复结果",
 		acceptanceCriteria: ["测试结果能说明当前问题已处理"],
