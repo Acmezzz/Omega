@@ -2,6 +2,9 @@
  * E1/E2/E3: matcher filtering & caching, injector rendering, tracker state machine.
  */
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { filterCandidates, matchWorkflow } from "../core/engine/matcher.ts";
 import { renderGuidance } from "../core/engine/injector.ts";
@@ -19,13 +22,14 @@ function seedRegistry(): RegistryEntry[] {
 describe("E1: matcher", () => {
 	it("filters by status, excludes and orders by level then evidence", () => {
 		const registry: RegistryEntry[] = [
-			{ id: "l3-big", level: 3, intent: "大任务", evidence: 5, usage: 0, escapes: 0, status: "active", updatedAt: "" },
-			{ id: "l2-a", level: 2, intent: "A", evidence: 1, usage: 0, escapes: 0, status: "active", updatedAt: "" },
-			{ id: "l2-b", level: 2, intent: "B", evidence: 9, usage: 0, escapes: 0, status: "active", updatedAt: "" },
-			{ id: "l1-x", level: 1, intent: "X", evidence: 1, usage: 0, escapes: 0, status: "active", updatedAt: "" },
-			{ id: "l1-prob", level: 1, intent: "观察中", evidence: 1, usage: 0, escapes: 0, status: "probation", updatedAt: "" },
+			{ id: "l3-big", featureId: "feature-code", level: 3, intent: "大任务", evidence: 5, usage: 0, escapes: 0, status: "active", updatedAt: "" },
+			{ id: "l2-a", featureId: "feature-code", level: 2, intent: "A", evidence: 1, usage: 0, escapes: 0, status: "active", updatedAt: "" },
+			{ id: "l2-b", featureId: "feature-code", level: 2, intent: "B", evidence: 9, usage: 0, escapes: 0, status: "active", updatedAt: "" },
+			{ id: "l1-x", featureId: "feature-code", level: 1, intent: "X", evidence: 1, usage: 0, escapes: 0, status: "active", updatedAt: "" },
+			{ id: "l1-prob", featureId: "feature-code", level: 1, intent: "观察中", evidence: 1, usage: 0, escapes: 0, status: "probation", updatedAt: "" },
 			{
 				id: "l2-excl",
+				featureId: "feature-code",
 				level: 2,
 				intent: "会被排除",
 				excludes: ["登录页面 UI"],
@@ -71,7 +75,7 @@ describe("E1: matcher", () => {
 	it("matches an independent L2 through its functional catalog without an L3", async () => {
 		const llm = new FakeLlm([JSON.stringify({ featureIds: ["feature-web-research"] }), JSON.stringify({ id: "l2-research-docs" })]);
 		const registry: RegistryEntry[] = [
-			{ id: "l2-research-docs", level: 2, intent: "联网查阅并整理文档", evidence: 2, usage: 0, escapes: 0, status: "active", updatedAt: "" },
+			{ id: "l2-research-docs", featureId: "feature-web-research", level: 2, intent: "联网查阅并整理文档", evidence: 2, usage: 0, escapes: 0, status: "active", updatedAt: "" },
 		];
 		const hit = await matchWorkflow(
 			"查阅官方文档并整理成对比表",
@@ -105,6 +109,39 @@ describe("E2: injector", () => {
 		const text = renderGuidance(entry, { getEntity: (id) => store.getEntity(id) });
 		expect(text).toContain("grep");
 		expect(text).toContain("检查点：grep 返回非空匹配");
+	});
+
+	it("expands a run_code step to read+bash guidance and renders a WorkStrategy", () => {
+		const root = mkdtempSync(join(tmpdir(), "jw-inject-"));
+		try {
+			const store = WorkflowStore.createEmpty(root);
+			store.upsertEntity({ id: "l2-run", intent: "跑脚本", steps: [{ intent: "运行复现脚本", action: { tool: "run_code", argsTemplate: "{codeAsset:asset-repro-shell}" } }] }, 2, "feature-repro");
+			store.upsertCodeAsset({ id: "asset-repro-shell", name: "复现脚本", language: "sh", summary: "复现", code: "npm test" });
+			store.upsertEntity({
+				id: "ws-debug",
+				intent: "调试登录崩溃",
+				featureId: "feature-repro",
+				reasoning: "先复现再定位后修复",
+				caveats: ["保留现场"],
+				steps: [{ intent: "复现", ref: "l2-run", note: "先跑脚本" }],
+			}, 3, "feature-repro");
+
+			const deps = {
+				getEntity: (id: string) => store.getEntity(id),
+				getCodeAssetPath: (id: string) => store.getCodeAsset(id) ? store.codeAssetScriptPath(id, "sh") : undefined,
+			};
+			const l2 = renderGuidance(store.getEntry("l2-run")!, deps);
+			expect(l2).toContain("运行已保存的脚本 asset-repro-shell");
+			expect(l2).toContain("bash");
+
+			const ws = renderGuidance(store.getEntry("ws-debug")!, deps);
+			expect(ws).toContain("解题思路");
+			expect(ws).toContain("先复现再定位后修复");
+			expect(ws).toContain("注意事项");
+			expect(ws).toContain("l2-run");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

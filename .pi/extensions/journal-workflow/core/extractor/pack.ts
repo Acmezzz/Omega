@@ -1,273 +1,275 @@
 /**
- * Packing: LLM-assisted semantic labeling over programmatic candidates.
- * The LLM never decides boundaries or counts — it names intents and judges
- * similarity against the existing registry.
+ * Packing: single-pass LLM synthesis of the workflow library from the memory
+ * log. The LLM reads the distilled memory records and emits three granularities
+ * (L3 complete orchestration, L2 workflow, L1 atomic ops), each assigned to a
+ * functional feature. Unlike the old frequency-mining approach, the LLM judges
+ * value itself: it keeps useful operations and drops failed / non-advancing ones
+ * based on the memory log's distilled significance and failure analysis.
+ *
+ * The LLM never touches files or the registry; it returns a structured proposal
+ * that extract.ts persists idempotently (evidence ledger + manifest watermark).
  */
 import type { LlmClient } from "../llm.ts";
 import { parseJsonLoose } from "../llm.ts";
-import type { RegistryEntry } from "../library/types.ts";
+import type { MemoryRecord } from "../memory/types.ts";
+import type { L1Template, L2Workflow, WorkStrategy } from "../library/types.ts";
 
-export const PROPOSE_SYSTEM_PROMPT = `You convert successful task logs into a reusable workflow draft.
+export const SYNTHESIZE_SYSTEM_PROMPT = `You distill a reusable workflow library from memory-log records.
+The memory log is a faithful timeline of real tool calls (successes AND failures) with distilled results and failure analysis.
+Your job: produce structured workflows, a functional catalog, AND reusable code assets.
+
+Three levels (execution granularity, not category):
+- L3 WorkStrategy 完整任务方案: a full-task solution PLAN — how to think about and approach a whole concrete task (reasoning), things to watch out for (caveats), and which L2/L1 workflows to run (steps, advisory). It is macro guidance, not a phase executor.
+- L2 工作流: a medium-grained reusable workflow with checkpoints/retries, a reusable slice of a task.
+- L1 原子操作: a fine-grained atomic tool-combination template.
+
+Code assets:
+- When the log shows the model wrote a self-contained, reusable script/code snippet to accomplish a step, extract it as a "codeAssets" entry. This makes previously-thrown-away code a reusable asset.
+- In an L2 step (or L1 call) that runs such a snippet, use {"tool":"run_code","argsTemplate":"{codeAsset:<id>}"}. The model will read the asset and run it via bash; you do not need a real tool.
+
 Rules:
-- Only use tools and facts present in the input; do not invent steps.
-- Each step: short intent + the tool used; mark expect ONLY where the logs show a clear success criterion.
+- Base everything ONLY on tools/facts present in the input memory log; never invent steps, tools, or code.
+- Learn from what worked: include useful operations. Drop calls that are failed-without-information or did not advance the task (significance "wasted"/"neutral"), but DO keep a failed call when the memory log shows a learned recovery or a useful negative result.
+- Assign each L3/L2/L1 to one functional feature. A single task can contribute different levels to DIFFERENT features. Prefer generic, reusable workflows over task-specific ones.
+- Naming: L2 id = "l2-<kebab>", L1 = "l1-<kebab>", L3 WorkStrategy id = "ws-<kebab>"; keep ids stable so re-extraction merges.
+- Code asset id = "asset-<kebab>";
 Output ONLY JSON:
-{"id": "l2-kebab-case-id", "intent": "一句话任务族描述", "steps": [{"intent": "...", "tool": "...", "expect": string|null}]}`;
+{
+  "features": [{"id":"feature-...","label":"...","description":"...","aliases":["..."],"levelSemantics":"..."}],
+  "codeAssets": [{"id":"asset-...","name":"...","language":"py|js|sh|...","summary":"...","code":"<full source>"}],
+  "workflows": [
+    {"id":"ws-...","featureId":"feature-...","level":3,"intent":"...","excludes":["..."],
+     "reasoning":"...","caveats":["..."],"steps":[{"intent":"...","ref":"l2-...","note":"..."}]},
+    {"id":"l2-...","featureId":"feature-...","level":2,"intent":"...","excludes":["..."],
+     "steps":[{"intent":"...","action":{"tool":"...","argsTemplate":"..."},"expect":null,"retries":2}]},
+    {"id":"l1-...","featureId":"feature-...","level":1,"intent":"...","excludes":["..."],
+     "calls":[{"tool":"...","argsTemplate":"..."}],"expect":null,"variants":[]}
+  ]
+}`;
 
-export const PROPOSE_L1_SYSTEM_PROMPT = `You name a reusable tool-combo template from recurring tool sequences.
-Rules: derive the intent from the example tasks only; keep argsTemplate as a generic placeholder description.
-Output ONLY JSON:
-{"id": "l1-kebab-case-id", "intent": "一句话模板用途", "calls": [{"tool": "...", "argsTemplate": "..."}], "expect": string|null}`;
-
-export const JUDGE_SYSTEM_PROMPT = `You judge whether a new workflow/template candidate is semantically the same as an existing registry entry (same task family / same tool purpose).
-Output ONLY JSON: {"similarTo": "<existing id>"} or {"similarTo": null}`;
-
-export const ALTERNATIVE_SYSTEM_PROMPT = `A workflow step failed and the agent later solved the task in free mode. Propose which library entity (or free mode) should be tried first when this step fails again.
-Output ONLY JSON: {"alternative": "<l1-/l2- id or \\"free\\">", "note": "一句话依据"}`;
-
-export const MATCH_EXISTING_CATALOG_SYSTEM_PROMPT = `You assign workflow entries to an existing flat functional catalog.
-The catalog groups what workflows do; it is not an L1/L2/L3 hierarchy. Do not create, rename, or modify categories.
-Use only feature IDs present in the input. An entry may belong to multiple existing features. If no existing feature fits, put the entry ID in unmatchedEntryIds.
-Output ONLY JSON: {"assignments":[{"entryId":"...","featureIds":["existing-feature-id"]}],"unmatchedEntryIds":["entry-id"]}`;
-
-export const PROPOSE_NEW_CATALOG_SYSTEM_PROMPT = `You create flat functional catalog categories only for unmatched workflow entries.
-The category should express a reusable capability and have only a short label, simple description, and optional aliases. Do not create hierarchy, tags, execution-level categories, or copy workflow steps. Do not reuse any existing feature ID from the input.
-Every new category must be useful for the supplied unmatched entries; do not invent unrelated categories.
-Output ONLY JSON: {"newFeatures":[{"id":"feature-kebab-case","label":"...","description":"...","aliases":["..."]}],"assignments":[{"entryId":"unmatched-entry-id","featureIds":["new-feature-id"]}]}`;
-
-export interface CatalogAssignment {
-	entryId: string;
-	featureIds: string[];
-}
-
-export interface CatalogMatchProposal {
-	assignments: CatalogAssignment[];
-	unmatchedEntryIds: string[];
-}
-
-export interface ProposedCatalogFeature {
+export interface SynthesizeFeature {
 	id: string;
 	label: string;
 	description: string;
 	aliases: string[];
+	levelSemantics?: string;
 }
 
-export interface CatalogProposal {
-	assignments: CatalogAssignment[];
-	newFeatures: ProposedCatalogFeature[];
+export interface SynthesizedCodeAsset {
+	id: string;
+	name: string;
+	language: string;
+	summary: string;
+	code: string;
 }
 
-type CatalogFeatureCard = { id: string; label: string; description: string; aliases: string[] };
-type CatalogEntryCard = Pick<RegistryEntry, "id" | "level" | "intent" | "excludes">;
+export type SynthesizedWorkflow =
+	| { id: string; featureId: string; level: 1; intent: string; excludes?: string[]; calls: Array<{ tool: string; argsTemplate: string }>; expect?: string | null; variants: string[] }
+	| { id: string; featureId: string; level: 2; intent: string; excludes?: string[]; steps: Array<{ intent: string; action?: { tool: string; argsTemplate: string }; expect?: string | null; retries?: number }> }
+	| { id: string; featureId: string; level: 3; intent: string; excludes?: string[]; reasoning: string; caveats: string[]; steps: Array<{ intent: string; ref?: string; note?: string }> };
 
-function parseAssignments(obj: Record<string, unknown>): CatalogAssignment[] {
-	return Array.isArray(obj.assignments)
-		? (obj.assignments as Array<Record<string, unknown>>)
-			.filter((item) => typeof item?.entryId === "string" && Array.isArray(item.featureIds))
-			.map((item) => ({
-				entryId: item.entryId as string,
-				featureIds: (item.featureIds as unknown[]).filter((id): id is string => typeof id === "string"),
-			}))
+export interface SynthesisResult {
+	features: SynthesizeFeature[];
+	codeAssets: SynthesizedCodeAsset[];
+	workflows: SynthesizedWorkflow[];
+}
+
+export function buildMemoryPayload(records: MemoryRecord[]): string {
+	return JSON.stringify(
+		{
+			memoryRecords: records.map((record) => ({
+				seq: record.seq,
+				span: [record.spanFromTurnSeq, record.spanToTurnSeq],
+				userIntent: record.userIntent,
+				thinking: record.thinking,
+				memories: record.memories,
+				tools: record.tools.map((tool) => ({
+					index: tool.index,
+					tool: tool.tool,
+					status: tool.status,
+					args: tool.args,
+					resultSummary: tool.resultSummary,
+					failureAnalysis: tool.failureAnalysis,
+					intent: tool.intent,
+					significance: tool.significance,
+				})),
+			})),
+		},
+		null,
+		1,
+	);
+}
+
+/** Parse the single-pass synthesis response; null when unusable. */
+export function parseSynthesis(text: string): SynthesisResult | null {
+	const parsed = parseJsonLoose(text);
+	if (!parsed || typeof parsed !== "object") return null;
+	const obj = parsed as Record<string, unknown>;
+	const features = Array.isArray(obj.features)
+		? (obj.features as unknown[])
+			.map((item): SynthesizeFeature | null => {
+				if (!item || typeof item !== "object") return null;
+				const f = item as Record<string, unknown>;
+				if (typeof f.id !== "string" || typeof f.label !== "string" || typeof f.description !== "string") return null;
+				return {
+					id: f.id,
+					label: f.label,
+					description: f.description,
+					aliases: Array.isArray(f.aliases) ? f.aliases.filter((x): x is string => typeof x === "string") : [],
+					levelSemantics: typeof f.levelSemantics === "string" ? f.levelSemantics : undefined,
+				};
+			})
+			.filter((item): item is SynthesizeFeature => item !== null)
 		: [];
-}
-
-export async function matchExistingCatalog(
-	features: CatalogFeatureCard[],
-	entries: CatalogEntryCard[],
-	llm: LlmClient,
-): Promise<CatalogMatchProposal | null> {
-	if (entries.length === 0) return { assignments: [], unmatchedEntryIds: [] };
-	try {
-		const text = await llm.complete({
-			systemPrompt: MATCH_EXISTING_CATALOG_SYSTEM_PROMPT,
-			userPayload: JSON.stringify({ features, entries }),
-			maxTokens: 500,
-		});
-		const parsed = parseJsonLoose(text);
-		if (!parsed || typeof parsed !== "object") return null;
-		const obj = parsed as Record<string, unknown>;
-		const unmatchedEntryIds = Array.isArray(obj.unmatchedEntryIds)
-			? (obj.unmatchedEntryIds as unknown[]).filter((id): id is string => typeof id === "string")
-			: [];
-		return { assignments: parseAssignments(obj), unmatchedEntryIds };
-	} catch {
-		return null;
+	const workflowsRaw = Array.isArray(obj.workflows) ? (obj.workflows as Array<Record<string, unknown>>) : [];
+	const workflows: SynthesizedWorkflow[] = [];
+	const featureIds = new Set(features.map((f) => f.id));
+	for (const w of workflowsRaw) {
+		if (!w || typeof w !== "object") continue;
+		if (typeof w.id !== "string" || typeof w.featureId !== "string" || typeof w.intent !== "string") continue;
+		if (!featureIds.has(w.featureId)) continue; // workflow must belong to a known feature
+		const level = typeof w.level === "number" ? w.level : inferLevel(w.id);
+		const excludes = Array.isArray(w.excludes) ? w.excludes.filter((x): x is string => typeof x === "string") : undefined;
+		if (level === 1 && Array.isArray(w.calls)) {
+			workflows.push({
+				id: w.id, featureId: w.featureId, level: 1, intent: w.intent, excludes,
+				calls: exportCalls(w.calls),
+				expect: typeof w.expect === "string" ? w.expect : null,
+				variants: Array.isArray(w.variants) ? w.variants.filter((x): x is string => typeof x === "string") : [],
+			});
+		} else if (level === 2 && Array.isArray(w.steps)) {
+			workflows.push({
+				id: w.id, featureId: w.featureId, level: 2, intent: w.intent, excludes,
+				steps: exportSteps(w.steps),
+			});
+		} else if (level === 3 && typeof w.reasoning === "string") {
+			workflows.push({
+				id: w.id, featureId: w.featureId, level: 3, intent: w.intent, excludes,
+				reasoning: w.reasoning,
+				caveats: Array.isArray(w.caveats) ? w.caveats.filter((x): x is string => typeof x === "string") : [],
+				steps: exportWorkStrategySteps(w.steps),
+			});
+		}
 	}
+	const codeAssets = Array.isArray(obj.codeAssets)
+		? (obj.codeAssets as unknown[])
+			.map((item): SynthesizedCodeAsset | null => {
+				if (!item || typeof item !== "object") return null;
+				const a = item as Record<string, unknown>;
+				if (typeof a.id !== "string" || typeof a.code !== "string") return null;
+				return {
+					id: a.id,
+					name: typeof a.name === "string" ? a.name : a.id,
+					language: typeof a.language === "string" && /^[a-z0-9]+$/.test(a.language) ? a.language : "txt",
+					summary: typeof a.summary === "string" ? a.summary : "",
+					code: a.code,
+				};
+			})
+			.filter((item): item is SynthesizedCodeAsset => item !== null)
+		: [];
+	return workflows.length > 0 || codeAssets.length > 0 ? { features, codeAssets, workflows } : null;
 }
 
-export async function proposeNewCatalog(
-	features: CatalogFeatureCard[],
-	entries: CatalogEntryCard[],
-	llm: LlmClient,
-): Promise<CatalogProposal | null> {
-	if (entries.length === 0) return { assignments: [], newFeatures: [] };
-	try {
-		const text = await llm.complete({
-			systemPrompt: PROPOSE_NEW_CATALOG_SYSTEM_PROMPT,
-			userPayload: JSON.stringify({ existingFeatures: features, unmatchedEntries: entries }),
-			maxTokens: 700,
-		});
-		const parsed = parseJsonLoose(text);
-		if (!parsed || typeof parsed !== "object") return null;
-		const obj = parsed as Record<string, unknown>;
-		const newFeatures = Array.isArray(obj.newFeatures)
-			? (obj.newFeatures as Array<Record<string, unknown>>)
-				.filter((item) => typeof item?.id === "string" && typeof item.label === "string" && typeof item.description === "string")
-				.map((item) => ({
-					id: item.id as string,
-					label: item.label as string,
-					description: item.description as string,
-					aliases: Array.isArray(item.aliases) ? (item.aliases as unknown[]).filter((x): x is string => typeof x === "string") : [],
-				}))
-			: [];
-		return { assignments: parseAssignments(obj), newFeatures };
-	} catch {
-		return null;
-	}
+function inferLevel(id: string): 1 | 2 | 3 {
+	if (/^ws-/.test(id) || /^l3-/.test(id)) return 3;
+	if (/^l2-/.test(id)) return 2;
+	return 1;
 }
 
-/** @deprecated Use matchExistingCatalog followed by proposeNewCatalog. */
-export async function proposeCatalog(
-	features: CatalogFeatureCard[],
-	entries: CatalogEntryCard[],
-	llm: LlmClient,
-): Promise<CatalogProposal | null> {
-	return proposeNewCatalog(features, entries, llm);
+function exportCalls(calls: unknown): Array<{ tool: string; argsTemplate: string }> {
+	if (!Array.isArray(calls)) return [];
+	return calls.filter((c): c is { tool: string; argsTemplate: string } =>
+			!!c && typeof c === "object" && typeof (c as { tool?: unknown }).tool === "string" && typeof (c as { argsTemplate?: unknown }).argsTemplate === "string")
+		.map((c) => ({ tool: (c as { tool: string }).tool, argsTemplate: (c as { argsTemplate: string }).argsTemplate }));
 }
 
-export interface TaskSummaryForProposal {
-	taskId: string;
-	outcome: string;
-	turns: Array<{
-		seq: number;
-		intent: string | null;
-		relation: string | null;
-		outcome: string;
-		tools: string[];
-	}>;
-}
-
-export interface ProposedL2 {
-	id: string;
-	intent: string;
-	steps: Array<{ intent: string; tool: string; expect: string | null }>;
-}
-
-export interface ProposedL1 {
-	id: string;
-	intent: string;
-	calls: Array<{ tool: string; argsTemplate: string }>;
-	expect: string | null;
-}
-
-export async function proposeWorkflow(summaries: TaskSummaryForProposal[], llm: LlmClient): Promise<ProposedL2 | null> {
-	try {
-		const text = await llm.complete({
-			systemPrompt: PROPOSE_SYSTEM_PROMPT,
-			userPayload: JSON.stringify({ tasks: summaries }),
-			maxTokens: 800,
-		});
-		const parsed = parseJsonLoose(text);
-		if (!parsed || typeof parsed !== "object") return null;
-		const obj = parsed as Record<string, unknown>;
-		if (typeof obj.id !== "string" || typeof obj.intent !== "string" || !Array.isArray(obj.steps)) return null;
-		const steps = (obj.steps as Array<Record<string, unknown>>)
-			.filter((s) => s && typeof s.intent === "string" && typeof s.tool === "string")
-			.map((s) => ({
-				intent: s.intent as string,
-				tool: s.tool as string,
-				expect: typeof s.expect === "string" ? s.expect : null,
-			}));
-		if (steps.length === 0) return null;
-		return { id: obj.id, intent: obj.intent, steps };
-	} catch {
-		return null;
-	}
-}
-
-export async function proposeL1(
-	pattern: { tools: string[]; count: number },
-	exampleTasks: string[],
-	llm: LlmClient,
-): Promise<ProposedL1 | null> {
-	try {
-		const text = await llm.complete({
-			systemPrompt: PROPOSE_L1_SYSTEM_PROMPT,
-			userPayload: JSON.stringify({ recurringTools: pattern.tools, seenInTasks: pattern.count, exampleTasks }),
-			maxTokens: 400,
-		});
-		const parsed = parseJsonLoose(text);
-		if (!parsed || typeof parsed !== "object") return null;
-		const obj = parsed as Record<string, unknown>;
-		if (typeof obj.id !== "string" || typeof obj.intent !== "string" || !Array.isArray(obj.calls)) return null;
-		const calls = (obj.calls as Array<Record<string, unknown>>)
-			.filter((c) => c && typeof c.tool === "string" && typeof c.argsTemplate === "string")
-			.map((c) => ({ tool: c.tool as string, argsTemplate: c.argsTemplate as string }));
-		if (calls.length === 0) return null;
-		return {
-			id: obj.id,
-			intent: obj.intent,
-			calls,
-			expect: typeof obj.expect === "string" ? obj.expect : null,
+function exportSteps(steps: unknown): L2Workflow["steps"] {
+	if (!Array.isArray(steps)) return [];
+	const out: L2Workflow["steps"] = [];
+	for (const raw of steps) {
+		if (!raw || typeof raw !== "object") continue;
+		const step = raw as Record<string, unknown>;
+		if (typeof step.intent !== "string") continue;
+		const entry: Exclude<L2Workflow["steps"][number], undefined> = {
+			intent: step.intent,
+			retries: typeof step.retries === "number" ? step.retries : undefined,
+			expect: typeof step.expect === "string" ? step.expect : undefined,
 		};
+		if (step.action && typeof step.action === "object") {
+			const action = step.action as Record<string, unknown>;
+			if (typeof action.tool === "string" && typeof action.argsTemplate === "string") {
+				entry.action = { tool: action.tool, argsTemplate: action.argsTemplate };
+			}
+		}
+		out.push(entry);
+	}
+	return out;
+}
+
+function exportWorkStrategySteps(steps: unknown): WorkStrategy["steps"] {
+	if (!Array.isArray(steps)) return [];
+	const out: WorkStrategy["steps"] = [];
+	for (const raw of steps) {
+		if (!raw || typeof raw !== "object") continue;
+		const step = raw as Record<string, unknown>;
+		if (typeof step.intent !== "string") continue;
+		out.push({
+			intent: step.intent,
+			ref: typeof step.ref === "string" ? step.ref : undefined,
+			note: typeof step.note === "string" ? step.note : undefined,
+		});
+	}
+	return out;
+}
+
+export async function synthesizeLibrary(records: MemoryRecord[], llm: LlmClient): Promise<SynthesisResult | null> {
+	if (records.length === 0) return null;
+	try {
+		const text = await llm.complete({
+			systemPrompt: SYNTHESIZE_SYSTEM_PROMPT,
+			userPayload: buildMemoryPayload(records),
+			maxTokens: 5000,
+		});
+		return parseSynthesis(text);
 	} catch {
 		return null;
 	}
 }
 
-export async function judgeSimilarity(
-	candidateIntent: string,
-	registry: RegistryEntry[],
-	llm: LlmClient,
-	candidateLevel?: 1 | 2 | 3,
-): Promise<string | null> {
-	const comparable = candidateLevel === undefined ? registry : registry.filter((entry) => entry.level === candidateLevel);
-	if (comparable.length === 0) return null;
-	try {
-		const text = await llm.complete({
-			systemPrompt: JUDGE_SYSTEM_PROMPT,
-			userPayload: JSON.stringify({
-				candidate: candidateIntent,
-				candidateLevel,
-				registry: comparable.map((e) => ({ id: e.id, intent: e.intent, level: e.level })),
-			}),
-			maxTokens: 100,
-		});
-		const parsed = parseJsonLoose(text);
-		if (!parsed || typeof parsed !== "object") return null;
-		const similarTo = (parsed as Record<string, unknown>).similarTo;
-		if (typeof similarTo !== "string") return null;
-			return comparable.some((e) => e.id === similarTo) ? similarTo : null;
-
-	} catch {
-		return null;
-	}
+// ---- WorkStrategy transformer (used by extract.ts) ----
+export function workStrategyFrom(entity: SynthesizedWorkflow & { level: 3 }): WorkStrategy {
+	return {
+		id: entity.id,
+		intent: entity.intent,
+		excludes: entity.excludes,
+		featureId: entity.featureId,
+		reasoning: entity.reasoning,
+		caveats: entity.caveats,
+		steps: entity.steps,
+	};
 }
 
-export async function proposeAlternative(
-	failure: { workflowId: string; stepIndex: number; expect: string; escapeReason: string },
-	recoveryTools: string[],
-	registry: RegistryEntry[],
-	llm: LlmClient,
-): Promise<{ alternative: string; note: string } | null> {
-	try {
-		const text = await llm.complete({
-			systemPrompt: ALTERNATIVE_SYSTEM_PROMPT,
-			userPayload: JSON.stringify({
-				failure,
-				recoveryPathTools: recoveryTools,
-				registry: registry.map((e) => ({ id: e.id, intent: e.intent, level: e.level })),
-			}),
-			maxTokens: 200,
-		});
-		const parsed = parseJsonLoose(text);
-		if (!parsed || typeof parsed !== "object") return null;
-		const obj = parsed as Record<string, unknown>;
-		if (typeof obj.alternative !== "string") return null;
-		const known = obj.alternative === "free" || registry.some((e) => e.id === obj.alternative);
-		if (!known) return null;
-		return { alternative: obj.alternative, note: typeof obj.note === "string" ? obj.note : "" };
-	} catch {
-		return null;
-	}
+export function l2FromSteps(entity: SynthesizedWorkflow & { level: 2 }): L2Workflow {
+	return {
+		id: entity.id,
+		intent: entity.intent,
+		excludes: entity.excludes,
+		steps: entity.steps.map((s) => ({
+			intent: s.intent,
+			action: s.action,
+			expect: s.expect ?? undefined,
+			retries: s.retries,
+		})),
+	};
+}
+
+export function l1FromCalls(entity: SynthesizedWorkflow & { level: 1 }): L1Template {
+	return {
+		id: entity.id,
+		intent: entity.intent,
+		excludes: entity.excludes,
+		calls: entity.calls,
+		expect: entity.expect ?? undefined,
+		variants: entity.variants,
+	};
 }

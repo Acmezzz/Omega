@@ -11,11 +11,14 @@ import {
 	type LibraryEntity,
 	type L1Template,
 	type L2Workflow,
+	type WorkStrategy,
 	type RegistryEntry,
 } from "../library/types.ts";
 
 export interface InjectorDeps {
 	getEntity: (id: string) => LibraryEntity | undefined;
+	/** Optional: resolve a code asset id to its disk path for run_code guidance. */
+	getCodeAssetPath?: (id: string) => string | undefined;
 }
 
 export function renderGuidance(entry: RegistryEntry, deps: InjectorDeps): string {
@@ -49,7 +52,7 @@ function renderL2Block(l2: L2Workflow, deps: InjectorDeps): string {
 		const tool = step.ref
 			? `模板 ${step.ref}`
 			: step.action
-				? `${step.action.tool}`
+				? describeAction(step.action.tool, step.action.argsTemplate, deps)
 				: "（自由发挥）";
 		const cp = step.expect ? " ◆检查点" : "";
 		lines.push(`${i + 1}. ${step.intent}（${tool}${cp}）`);
@@ -62,13 +65,26 @@ function renderL2Block(l2: L2Workflow, deps: InjectorDeps): string {
 			lines.push(`\n首步细节：\n${renderL1Block(l1)}`);
 		}
 	} else if (first?.action) {
-		lines.push(`\n首步细节：${first.action.tool} ${first.action.argsTemplate}`);
+		lines.push(`\n首步细节：${describeAction(first.action.tool, first.action.argsTemplate, deps)}`);
 	}
 	return `参考步骤：\n${lines.join("\n")}`;
 }
 
-function renderL3Block(l3: L2Workflow | { phases: Array<{ goal: string; defaultRef?: string }> }): string {
-	const phases = (l3 as { phases: Array<{ goal: string; defaultRef?: string }> }).phases;
-	const lines = phases.map((p, i) => `${i + 1}. ${p.goal}${p.defaultRef ? `（默认 ${p.defaultRef}）` : ""}`);
-	return `阶段计划：\n${lines.join("\n")}`;
+/** Describe a step action; run_code references expand to read+bash guidance. */
+function describeAction(tool: string, argsTemplate: string, deps: InjectorDeps): string {
+	if (tool === "run_code") {
+		const match = /codeAsset:([A-Za-z0-9_-]+)/.exec(argsTemplate);
+		const assetId = match?.[1] ?? "???";
+		const path = deps.getCodeAssetPath?.(assetId);
+		const pathHint = path ? `（${path}）` : "";
+		return `运行已保存的脚本 ${assetId}${pathHint}：先用 read 读取代码资产内容（若未落盘则用 write 写入），再用 bash 执行`;
+	}
+	return `${tool} ${argsTemplate}`;
+}
+
+function renderL3Block(ws: WorkStrategy): string {
+	const steps = ws.steps.length > 0
+		? `\n执行路线：\n${ws.steps.map((s, i) => `${i + 1}. ${s.intent}${s.ref ? ` → ${s.ref}` : ""}${s.note ? `（${s.note}）` : ""}`).join("\n")}`
+		: "";
+	return `解题思路：${ws.reasoning}\n注意事项：${ws.caveats.join("；") || "无"}${steps}`;
 }

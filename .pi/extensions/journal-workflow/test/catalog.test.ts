@@ -3,9 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WorkflowStore } from "../core/library/store.ts";
-import { matchExistingCatalog, proposeNewCatalog } from "../core/extractor/pack.ts";
+import { parseSynthesis } from "../core/extractor/pack.ts";
 import type { L2Workflow } from "../core/library/types.ts";
-import { FakeLlm } from "./helpers/fake-llm.ts";
 
 const roots: string[] = [];
 
@@ -13,34 +12,50 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+describe("synthesis parsing (cross-feature, three granularities)", () => {
+	it("assigns a single task's L1/L2/L3 to different functional features", () => {
+		const parsed = parseSynthesis(JSON.stringify({
+			features: [
+				{ id: "feature-calculation", label: "计算", description: "数值计算", aliases: [], levelSemantics: "L1/L2/L3 是执行粒度" },
+				{ id: "feature-analysis", label: "分析", description: "结果分析", aliases: [] },
+			],
+			workflows: [
+				{ id: "l1-compute", featureId: "feature-calculation", level: 1, intent: "数值计算", calls: [{ tool: "bash", argsTemplate: "运行计算" }], variants: [] },
+				{ id: "l2-analyze", featureId: "feature-analysis", level: 2, intent: "分析结果", steps: [{ intent: "整理", action: { tool: "grep", argsTemplate: "筛选" } }] },
+			],
+		}));
+		expect(parsed).not.toBeNull();
+		expect(parsed!.features).toHaveLength(2);
+		expect(parsed!.features[0].levelSemantics).toBe("L1/L2/L3 是执行粒度");
+		const l1 = parsed!.workflows.find((w) => w.id === "l1-compute");
+		const l2 = parsed!.workflows.find((w) => w.id === "l2-analyze");
+		// cross-feature: same task contributed to two different features
+		expect(l1?.featureId).toBe("feature-calculation");
+		expect(l2?.featureId).toBe("feature-analysis");
+		expect(l1?.level).toBe(1);
+		expect(l2?.level).toBe(2);
+	});
+
+	it("drops workflows that reference an unknown feature and non-JSON input", () => {
+		const parsed = parseSynthesis(JSON.stringify({
+			features: [{ id: "feature-a", label: "A", description: "A", aliases: [] }],
+			workflows: [
+				{ id: "l1-known", featureId: "feature-a", level: 1, intent: "x", calls: [], variants: [] },
+				{ id: "l1-orphan", featureId: "feature-missing", level: 1, intent: "y", calls: [], variants: [] },
+			],
+		}));
+		expect(parsed!.workflows.map((w) => w.id)).toEqual(["l1-known"]);
+		expect(parseSynthesis("not-json")).toBeNull();
+	});
+});
+
 describe("functional catalog", () => {
-	it("separates existing matching from new-category proposal", async () => {
-		const existing = [{ id: "feature-code", label: "代码理解", description: "定位和理解代码", aliases: [] }];
-		const entries = [{ id: "l2-docs", level: 2 as const, intent: "整理外部文档", excludes: [] }];
-		const llm = new FakeLlm([
-			JSON.stringify({ assignments: [], unmatchedEntryIds: ["l2-docs"] }),
-			JSON.stringify({ newFeatures: [{ id: "feature-docs", label: "信息综合", description: "整理外部资料", aliases: [] }], assignments: [{ entryId: "l2-docs", featureIds: ["feature-docs"] }] }),
-		]);
-		const first = await matchExistingCatalog(existing, entries, llm);
-		expect(first?.assignments).toEqual([]);
-		expect(first?.unmatchedEntryIds).toEqual(["l2-docs"]);
-		const second = await proposeNewCatalog(existing, entries, llm);
-		expect(second?.newFeatures[0].id).toBe("feature-docs");
-		expect(llm.calls[0].systemPrompt).toContain("Do not create");
-		expect(llm.calls[1].systemPrompt).toContain("only for unmatched");
-	});
-
-	it("rejects malformed phase output", async () => {
-		const llm = new FakeLlm(["not-json"]);
-		expect(await matchExistingCatalog([], [{ id: "l1-a", level: 1, intent: "A", excludes: [] }], llm)).toBeNull();
-	});
-
 	it("persists features, deduplicates members, and ignores unknown entries", () => {
 		const root = mkdtempSync(join(tmpdir(), "jw-catalog-"));
 		roots.push(root);
 		const store = WorkflowStore.createEmpty(root);
 		const entity: L2Workflow = { id: "l2-research-docs", intent: "联网查阅整理文档", steps: [] };
-		store.upsertEntity(entity, 2);
+		store.upsertEntity(entity, 2, "feature-web-research");
 		store.upsertCatalogFeature({
 			id: "feature-web-research",
 			label: "网络研究",
@@ -64,7 +79,7 @@ describe("functional catalog", () => {
 		const root = mkdtempSync(join(tmpdir(), "jw-catalog-"));
 		roots.push(root);
 		const store = WorkflowStore.createEmpty(root);
-		store.upsertEntity({ id: "l2-a", intent: "A", steps: [] }, 2);
+		store.upsertEntity({ id: "l2-a", intent: "A", steps: [] }, 2, "feature-a");
 		store.upsertCatalogFeature({ id: "feature-a", label: "A", description: "A", aliases: [], entryIds: ["l2-a"] });
 		store.upsertCatalogFeature({ id: "feature-b", label: "B", description: "B", aliases: [], entryIds: ["l2-a"] });
 		const repaired = store.repairCatalog();

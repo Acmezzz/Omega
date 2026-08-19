@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { LlmClient } from "./core/llm.ts";
 import { runExtraction } from "./core/extractor/extract.ts";
 import { WorkflowStore } from "./core/library/store.ts";
+import { isL1, isL2, isL3 } from "./core/library/types.ts";
 import { JournalWriter, listTasks, readTask, taskDirOf } from "./core/journal/writer.ts";
 import { BackupReader } from "./core/journal/backup.ts";
 import { buildRestorePlan } from "./core/journal/restore.ts";
@@ -40,23 +41,14 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 					projectKey,
 					store,
 					llm: deps.llm,
-					backupsRoot: deps.config.backupsRoot,
-					backupEnabled: deps.config.backupEnabled,
-					allowSensitiveFragments: deps.config.allowSensitiveFragments,
-					maxFragmentCharsPerRequest: deps.config.maxFragmentCharsPerRequest,
-					maxFragmentsPerRequest: deps.config.maxFragmentsPerRequest,
-
 			});
 			const lines = [
-				`任务 ${report.tasksScanned}（完成 ${report.completedTasks}），回合 ${report.turnsDistilled}（待提炼 ${report.turnsPendingDistill}）`,
-				`共现模式：${report.recurringPatterns.map((p) => `${p.tools.join("→")}×${p.count}`).join("、") || "无"}`,
-				`骨架：${report.skeleton.join(" → ") || "无"}`,
-				`新建 L1：${report.l1Created.join("、") || "无"}；新建 L2：${report.l2Created.join("、") || "无"}`,
-					`归并：${report.mergedInto.join("、") || "无"}`,
-					`目录：新建 ${report.catalogFeaturesCreated.join("、") || "无"}；归类 ${report.catalogEntriesAssigned.join("、") || "无"}；未归类 ${report.catalogEntriesUnmatched.join("、") || "无"}`,
-					`目录阶段：${report.catalogPhaseSkipped ?? "完整执行"}`,
-					`补充分支：${report.alternativesProposed.map((a) => `${a.workflowId}#${a.stepIndex}→${a.alternative}`).join("、") || "无"}`,
-
+				`任务 ${report.tasksScanned}，记忆记录 ${report.memoryRecords}`,
+				`新建 L1：${report.l1Created.join("、") || "无"}；新建 L2：${report.l2Created.join("、") || "无"}；新建方案：${report.l3Created.join("、") || "无"}`,
+				`代码资产：${report.codeAssetsCreated.join("、") || "无"}`,
+				`归并：${report.mergedInto.join("、") || "无"}`,
+				`目录：新建 ${report.catalogFeaturesCreated.join("、") || "无"}；归类 ${report.catalogEntriesAssigned.join("、") || "无"}；未归类 ${report.catalogEntriesUnmatched.join("、") || "无"}`,
+				`目录阶段：${report.catalogPhaseSkipped ?? "完整执行"}`,
 			];
 			notify(lines.join("\n"));
 		},
@@ -143,8 +135,21 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 				const entry = store.getEntry(id);
 				const entity = entry ? store.getEntity(id) : undefined;
 				if (!entry || !entity) { notify(`找不到 workflow：${id}`); return; }
-				const steps = "steps" in entity ? entity.steps.map((step, index) => `${index}. ${step.intent} [${step.action?.tool ?? step.ref ?? "unknown"}]${step.expect ? ` checkpoint=${step.expect}` : ""}${step.alternative ? ` alternative=${step.alternative}` : ""}`).join("\n") : "该条目不是 L2 步骤 workflow。";
-				notify([`L${entry.level} ${entry.id} [${entry.status}]`, `intent=${entry.intent}`, `evidence=${entry.evidence} usage=${entry.usage} escapes=${entry.escapes}`, steps].join("\n"));
+				let body: string;
+				if (isL1(entity)) {
+					body = entity.calls.map((c) => `- ${c.tool} ${c.argsTemplate}`).join("\n");
+				} else if (isL2(entity)) {
+					body = entity.steps.map((step, index) => `${index}. ${step.intent} [${step.action?.tool ?? step.ref ?? "unknown"}]${step.expect ? ` checkpoint=${step.expect}` : ""}${step.alternative ? ` alternative=${step.alternative}` : ""}`).join("\n");
+				} else if (isL3(entity)) {
+					body = [
+						`思路：${entity.reasoning}`,
+						`注意：${entity.caveats.join("；") || "无"}`,
+						...entity.steps.map((s, i) => `${i + 1}. ${s.intent}${s.ref ? ` → ${s.ref}` : ""}${s.note ? `（${s.note}）` : ""}`),
+					].join("\n");
+				} else {
+					body = "未知条目类型。";
+				}
+				notify([`L${entry.level} ${entry.id} [${entry.status}]`, `intent=${entry.intent}`, `evidence=${entry.evidence} usage=${entry.usage} escapes=${entry.escapes}`, body].join("\n"));
 			},
 		});
 

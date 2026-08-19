@@ -9,6 +9,8 @@ export type EntryStatus = "probation" | "active" | "deprecated";
 
 export interface RegistryEntry {
 	id: string;
+	/** Functional category this workflow belongs to (progressive-disclosure grouping). */
+	featureId: string;
 	level: WorkflowLevel;
 	/** Trigger semantics — what task family this entry covers. */
 	intent: string;
@@ -28,6 +30,8 @@ export interface CatalogFeature {
 	label: string;
 	description: string;
 	aliases: string[];
+	/** Short summary injected during disclosure to explain the L-level semantics. */
+	levelSemantics?: string;
 	/** Registry IDs; entity contents remain in their level-specific files. */
 	entryIds: string[];
 	updatedAt: string;
@@ -70,42 +74,59 @@ export interface L2Workflow {
 	steps: Step[];
 }
 
-export interface L3Phase {
-	goal: string;
-	/** Default L2 id — advisory; runtime may rematch. */
-	defaultRef?: string;
-	fallback: "inline" | "abort";
-	loop?: { onFailOf: string; goToPhase: number };
+export interface WorkStrategyStep {
+	intent: string;
+	/** Reference to an L1/L2 workflow this step uses. */
+	ref?: string;
+	/** Extra guidance/attention for this step. */
+	note?: string;
 }
 
-export interface L3Orchestration {
+/**
+ * L3 WorkStrategy: a full-task solution plan (macro guidance).
+ * Unlike L2/L1 (execution workflow / atomic ops), this is the top-level
+ * "how to think about and approach the whole task": reasoning + caveats +
+ * which L2/L1 workflows to run. It is advisory, not a phase executor.
+ * Stored under workstrategies/ but indexed by the functional catalog.
+ */
+export interface WorkStrategy {
 	id: string;
 	intent: string;
 	excludes?: string[];
-	phases: L3Phase[];
+	featureId: string;
+	/** Problem-solving outline: how to think about the whole task. */
+	reasoning: string;
+	/** Things to watch out for. */
+	caveats: string[];
+	/** Concrete sub-workflows referenced (L2/L1) with notes. */
+	steps: WorkStrategyStep[];
 }
 
-export type LibraryEntity = L1Template | L2Workflow | L3Orchestration;
+/** @deprecated Use WorkStrategy. Retained as a semantic alias. */
+export type L3Orchestration = WorkStrategy;
 
-export function entityDir(level: WorkflowLevel): string {
-	switch (level) {
-		case 1:
-			return "atoms";
-		case 2:
-			return "workflows";
-		case 3:
-			return "orchestrations";
-	}
+/** A reusable code asset: an independent script extracted from history. */
+export interface CodeAsset {
+	id: string;
+	name: string;
+	/** "py" | "js" | "sh" | ... used to pick the file extension. */
+	language: string;
+	summary: string;
+	code: string;
+	createdAt: string;
+	sources: Array<{ taskId: string; recordSeq: number }>;
 }
+
+export type LibraryEntity = L1Template | L2Workflow | WorkStrategy;
 
 export function isL1(entity: LibraryEntity): entity is L1Template {
 	return "calls" in entity;
 }
 
 export function isL2(entity: LibraryEntity): entity is L2Workflow {
-	return "steps" in entity;
+	return "steps" in entity && !("reasoning" in entity);
 }
 
-export function isL3(entity: LibraryEntity): entity is L3Orchestration {
-	return "phases" in entity;
+export function isL3(entity: LibraryEntity): entity is WorkStrategy {
+	return "reasoning" in entity;
 }

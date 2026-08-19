@@ -365,6 +365,11 @@ export class JournalWriter {
 		return this.currentTurn?.seq ?? this.lastSeq + 1;
 	}
 
+	/** Highest fact seq persisted or in-flight for this task. */
+	get lastTurnSeq(): number {
+		return this.currentTurn?.seq ?? this.lastSeq;
+	}
+
 	private flushTurn(): TurnRecord | null {
 		if (!this.currentTurn) return null;
 		this.rotateBlockIfNeeded();

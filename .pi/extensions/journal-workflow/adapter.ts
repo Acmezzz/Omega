@@ -24,6 +24,7 @@ import { checkExpect } from "./core/engine/validator.ts";
 import { EngineTracker, type EngineAction } from "./core/engine/tracker.ts";
 import { registerWorkflowCommands, type CommandPi } from "./commands.ts";
 import { createExecutionIds, WorkflowTraceWriter } from "./core/trace.ts";
+import { memorizeSpan, readTaskMemory } from "./core/memory/index.ts";
 import type { JournalWorkflowConfig } from "./config.ts";
 
 export interface WireDeps {
@@ -140,6 +141,8 @@ export interface WiredRuntime {
 	getPendingDistills(): Array<Promise<void>>;
 	/** In-flight fire-and-forget engine validations (tests await these). */
 	getPendingChecks(): Array<Promise<void>>;
+	/** In-flight fire-and-forget memory-log generations (tests await these). */
+	getPendingMemorizations(): Array<Promise<void>>;
 	/** Active workflow entry id, when the engine is guiding this turn. */
 		getActiveWorkflowId(): string | null;
 		getBackupDir(): string | null;
@@ -161,6 +164,9 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 	let prevContext: PrevTurnContext | null = null;
 	const pendingDistills = new Set<Promise<void>>();
 	const pendingChecks = new Set<Promise<void>>();
+	/** Highest fact turn seq already folded into a memory record (persisted across sessions). */
+	let lastMemoryTurnSeq = 0;
+	const pendingMemorizations = new Set<Promise<void>>();
 	const llm: LlmClient = deps.llm ?? makeCtxLlm(() => currentCtx);
 
 	// ---- Engine state (per session) ----
@@ -267,6 +273,10 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 				backup = null;
 
 				writer = new JournalWriter(deps.config.journalsRoot, key, header.id);
+				lastMemoryTurnSeq = readTaskMemory(deps.config.journalsRoot, key, header.id).records.reduce(
+					(max, record) => Math.max(max, record.spanToTurnSeq),
+					0,
+				);
 
 			if (deps.config.backupEnabled !== false) {
 				backup = new BackupWriter(deps.config.backupsRoot ?? join(deps.config.journalsRoot, ".backups"), key, header.id, header.id, {
@@ -349,7 +359,17 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		const activateWorkflow = (workflowId: string): string | null => {
 			const entry = getStore().getEntry(workflowId);
 			if (!entry || entry.status !== "active") return null;
-			if (activeEntry?.id === entry.id && tracker?.active) return renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
+			const renderGuidFor = (entry: RegistryEntry): string => {
+	const store = getStore();
+	return renderGuidance(entry, {
+		getEntity: (id) => store.getEntity(id),
+		getCodeAssetPath: (id) => {
+			const asset = store.getCodeAsset(id);
+			return asset ? store.codeAssetScriptPath(id, asset.language) : undefined;
+		},
+	});
+};
+			if (activeEntry?.id === entry.id && tracker?.active) return renderGuidFor(entry);
 				const l2 = getStore().getL2(entry.id);
 				const restored = l2 ? restoreTracker(l2.id, l2.steps) : null;
 				resetEngine();
@@ -361,7 +381,7 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 				}
 				activeEntry = entry;
 				getStore().bumpUsage(entry.id);
-				const guidance = renderGuidance(entry, { getEntity: (id) => getStore().getEntity(id) });
+				const guidance = renderGuidFor(entry);
 				tracker = l2 ? (restored ?? new EngineTracker(l2.id, l2.steps, { getL1: (id) => getStore().getL1(id) })) : null;
 				if (tracker?.active) saveTrackerSnapshot();
 				writer?.setActiveWorkflow(entry.id);
@@ -530,6 +550,37 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		deps.afterEvent?.("agent_settled");
 	});
 
+		pi.on("session_before_compact", (_event: unknown, ctxRaw: unknown) => {
+			currentCtx = ctxRaw as HandlerCtx;
+		if (deps.config.memoryOnCompact === false) { deps.afterEvent?.("session_before_compact"); return; }
+		const w = writer;
+		if (!w) { deps.afterEvent?.("session_before_compact"); return; }
+		const taskId = currentCtx.sessionManager?.getHeader?.()?.id;
+		const toSeq = w.currentTurnSeq ?? w.lastTurnSeq ?? lastMemoryTurnSeq;
+		if (!taskId || toSeq <= lastMemoryTurnSeq) { deps.afterEvent?.("session_before_compact"); return; }
+		const fromSeq = lastMemoryTurnSeq + 1;
+		lastMemoryTurnSeq = toSeq;
+		const tracked: Promise<void> = memorizeSpan(
+			{
+				journalsRoot: deps.config.journalsRoot,
+				projectKey: w.projectKey,
+				taskId,
+				llm,
+				backupReader: backup?.reader({ allowSensitive: deps.config.allowSensitiveFragments }) ?? null,
+				allowSensitive: deps.config.allowSensitiveFragments,
+				maxFragmentsPerRequest: deps.config.maxFragmentsPerRequest,
+				maxFragmentCharsPerRequest: deps.config.maxFragmentCharsPerRequest,
+			},
+			fromSeq,
+			toSeq,
+		)
+			.then(() => undefined)
+			.catch(() => undefined)
+			.finally(() => { pendingMemorizations.delete(tracked); });
+		pendingMemorizations.add(tracked);
+		deps.afterEvent?.("session_before_compact");
+	});
+
 		pi.on("session_shutdown", (event: { reason?: string; targetSessionFile?: string }, ctxRaw: unknown) => {
 			currentCtx = ctxRaw as HandlerCtx;
 			appendBackup("session_shutdown", { reason: event.reason ?? "quit", targetSessionFile: event.targetSessionFile });
@@ -561,6 +612,7 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		getLlm: () => llm,
 		getPendingDistills: () => [...pendingDistills],
 		getPendingChecks: () => [...pendingChecks],
+		getPendingMemorizations: () => [...pendingMemorizations],
 		getActiveWorkflowId: () => activeEntry?.id ?? null,
 		getBackupDir: () => backup?.dir ?? null,
 	};

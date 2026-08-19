@@ -2,6 +2,7 @@
 	"entries": [
 		{
 			"id": "l1-locate-symbol",
+			"featureId": "feature-testing",
 			"level": 1,
 			"intent": "定位一个符号/函数的定义、实现与调用点",
 			"evidence": 3,
@@ -12,6 +13,7 @@
 		},
 		{
 			"id": "l2-fix-failing-test",
+			"featureId": "feature-testing",
 			"level": 2,
 			"intent": "修复一个失败的测试：复现失败、定位代码、修改、重跑验证",
 			"excludes": ["登录页面 UI", "样式"],

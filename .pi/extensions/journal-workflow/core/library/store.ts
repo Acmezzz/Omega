@@ -1,7 +1,12 @@
 /**
- * WorkflowStore: registry + entity files under workflowsRoot.
- * {root}/registry.json, {root}/atoms/<id>.json, {root}/workflows/<id>.json,
- * {root}/orchestrations/<id>.json
+ * WorkflowStore: registry + per-feature entity files under workflowsRoot.
+ * {root}/registry.json, {root}/catalog.json,
+ * {root}/features/<feature-id>/l1-<id>.json, l2-<id>.json, l3-<id>.json
+ *
+ * Progressive disclosure: catalog.json (feature summaries + L-level semantics)
+ * is shown first; the internal l<level>-* files of a selected feature are read
+ * on demand. Entities are grouped by function (feature), each named with its L
+ * level prefix.
  *
  * Evolution rules (V1):
  * - evidence >= 2 → active (from probation)
@@ -18,7 +23,7 @@ import {
 	type RegistryEntry,
 	type CatalogFeature,
 	type CatalogFile,
-	entityDir,
+	type CodeAsset,
 	isL1,
 	isL2,
 	isL3,
@@ -101,10 +106,61 @@ export class WorkflowStore {
 
 	/** Create an empty store at root (used by seeds/tests). */
 	static createEmpty(rootDir: string): WorkflowStore {
-		mkdirSync(join(rootDir, "atoms"), { recursive: true });
-		mkdirSync(join(rootDir, "workflows"), { recursive: true });
-		mkdirSync(join(rootDir, "orchestrations"), { recursive: true });
+		mkdirSync(join(rootDir, "features"), { recursive: true });
+		mkdirSync(join(rootDir, "workstrategies"), { recursive: true });
 		return new WorkflowStore(rootDir, [], { ...EMPTY_CATALOG, features: [] });
+	}
+
+	/** Abs `code-assets/` under root. */
+	private codeAssetsDir(): string {
+		return join(this.rootDir, "code-assets");
+	}
+
+	/** Upsert a code asset (index json + true script file written to disk). */
+	upsertCodeAsset(asset: Omit<CodeAsset, "createdAt" | "sources"> & { sources?: CodeAsset["sources"] }): CodeAsset {
+		const dir = this.codeAssetsDir();
+		mkdirSync(dir, { recursive: true });
+		const full: CodeAsset = {
+			...asset,
+			createdAt: new Date().toISOString(),
+			sources: asset.sources ?? [],
+		};
+		writeFileSync(join(dir, `${asset.id}.json`), `${JSON.stringify(full, null, "\t")}\n`);
+		// True script file on disk so a model can reference the path and run it.
+		const ext = /^[a-z0-9]+$/.test(asset.language) ? asset.language : "txt";
+		writeFileSync(join(dir, `${asset.id}.${ext}`), asset.code);
+		return full;
+	}
+
+	getCodeAsset(id: string): CodeAsset | undefined {
+		const path = join(this.codeAssetsDir(), `${id}.json`);
+		if (!existsSync(path)) return undefined;
+		try {
+			return JSON.parse(readFileSync(path, "utf-8")) as CodeAsset;
+		} catch {
+			return undefined;
+		}
+	}
+
+	listCodeAssets(): CodeAsset[] {
+		const dir = this.codeAssetsDir();
+		if (!existsSync(dir)) return [];
+		return readdirSync(dir)
+			.filter((f) => f.endsWith(".json"))
+			.map((f) => {
+				try {
+					return JSON.parse(readFileSync(join(dir, f), "utf-8")) as CodeAsset;
+				} catch {
+					return null;
+				}
+			})
+			.filter((a): a is CodeAsset => a !== null);
+	}
+
+	/** Disk path of a code asset's script file (existence not guaranteed by caller). */
+	codeAssetScriptPath(id: string, language: string): string {
+		const ext = /^[a-z0-9]+$/.test(language) ? language : "txt";
+		return join(this.codeAssetsDir(), `${id}.${ext}`);
 	}
 
 	get root(): string { return this.rootDir; }
@@ -138,6 +194,7 @@ export class WorkflowStore {
 		if (existing) {
 			existing.label = feature.label || existing.label;
 			existing.description = feature.description || existing.description;
+			existing.levelSemantics = feature.levelSemantics || existing.levelSemantics;
 			existing.aliases = [...new Set([...existing.aliases, ...feature.aliases])];
 			existing.entryIds = [...new Set([...existing.entryIds, ...incomingIds])];
 			existing.updatedAt = now;
@@ -146,6 +203,7 @@ export class WorkflowStore {
 				id: feature.id,
 				label: feature.label,
 				description: feature.description,
+				levelSemantics: feature.levelSemantics,
 				aliases: [...new Set(feature.aliases)],
 				entryIds: [...new Set(incomingIds)],
 				updatedAt: feature.updatedAt ?? now,
@@ -179,7 +237,7 @@ export class WorkflowStore {
 	getEntity(id: string): LibraryEntity | undefined {
 		const entry = this.getEntry(id);
 		if (!entry) return undefined;
-		const path = join(this.rootDir, entityDir(entry.level), `${id}.json`);
+		const path = this.entityPath(entry.featureId, entry.level, id);
 		if (!existsSync(path)) return undefined;
 		try {
 			return JSON.parse(readFileSync(path, "utf-8")) as LibraryEntity;
@@ -229,17 +287,18 @@ export class WorkflowStore {
 	getEvidenceLedger(): EvidenceRecord[] { return this.evidenceLedger.map((record) => ({ ...record, source: record.source ? { ...record.source } : undefined, provenance: record.provenance ? { ...record.provenance } : undefined })); }
 
 	/** Insert or merge an entity; an evidenceKey makes the evidence update idempotent. */
-	upsertEntity(entity: LibraryEntity, level: 1 | 2 | 3, options: { countEvidence?: boolean; evidenceKey?: string; source?: Record<string, unknown>; provenance?: Record<string, string> } = {}): RegistryEntry {
+	upsertEntity(entity: LibraryEntity, level: 1 | 2 | 3, featureId: string, options: { countEvidence?: boolean; evidenceKey?: string; source?: Record<string, unknown>; provenance?: Record<string, string> } = {}): RegistryEntry {
 		const existing = this.getEntry(entity.id);
 		const now = new Date().toISOString();
 		const counted = options.countEvidence !== false && (!options.evidenceKey || !this.evidenceLedger.some((record) => record.evidenceKey === options.evidenceKey));
 			if (existing) {
 				if (counted) existing.evidence += 1;
+				if (featureId) existing.featureId = featureId;
 				existing.intent = entity.intent;
 				existing.excludes = entity.excludes;
 				existing.updatedAt = now;
 				if (counted && existing.status === "probation" && existing.evidence >= PROMOTION_EVIDENCE) existing.status = "active";
-				this.writeEntity(entity, level);
+				this.writeEntity(entity, existing.featureId, level);
 				if (counted && options.evidenceKey) this.evidenceLedger.push({ evidenceKey: options.evidenceKey, entryId: existing.id, source: options.source, provenance: options.provenance, recordedAt: now });
 				this.save();
 				if (counted && options.evidenceKey) this.saveEvidenceLedger();
@@ -247,6 +306,7 @@ export class WorkflowStore {
 			}
 		const entry: RegistryEntry = {
 			id: entity.id,
+			featureId,
 			level,
 			intent: entity.intent,
 			excludes: entity.excludes,
@@ -257,7 +317,7 @@ export class WorkflowStore {
 			updatedAt: now,
 		};
 		this.entries.push(entry);
-		this.writeEntity(entity, level);
+		this.writeEntity(entity, featureId, level);
 		if (options.evidenceKey) this.evidenceLedger.push({ evidenceKey: options.evidenceKey, entryId: entry.id, source: options.source, provenance: options.provenance, recordedAt: now });
 		this.save();
 		if (options.evidenceKey) this.saveEvidenceLedger();
@@ -265,9 +325,9 @@ export class WorkflowStore {
 	}
 
 	/** Merge a candidate into a same-level canonical entry and persist its entity content. */
-	mergeInto(newEntity: LibraryEntity, existingId: string, level: 1 | 2 | 3, options: { countEvidence?: boolean; evidenceKey?: string; source?: Record<string, unknown>; provenance?: Record<string, string> } = {}): RegistryEntry | undefined {
+	mergeInto(newEntity: LibraryEntity, existingId: string, level: 1 | 2 | 3, featureId: string, options: { countEvidence?: boolean; evidenceKey?: string; source?: Record<string, unknown>; provenance?: Record<string, string> } = {}): RegistryEntry | undefined {
 		const target = this.getEntry(existingId);
-		if (!target) return this.upsertEntity(newEntity, level, options);
+		if (!target) return this.upsertEntity(newEntity, level, featureId, options);
 		if (target.level !== level) return undefined;
 		const canonical = { ...newEntity, id: existingId } as LibraryEntity;
 		const counted = options.countEvidence !== false && (!options.evidenceKey || !this.evidenceLedger.some((record) => record.evidenceKey === options.evidenceKey));
@@ -276,7 +336,7 @@ export class WorkflowStore {
 		target.excludes = canonical.excludes;
 		target.updatedAt = new Date().toISOString();
 		if (counted && target.status === "probation" && target.evidence >= PROMOTION_EVIDENCE) target.status = "active";
-		this.writeEntity(canonical, target.level);
+		this.writeEntity(canonical, target.featureId, target.level);
 		if (counted && options.evidenceKey) this.evidenceLedger.push({ evidenceKey: options.evidenceKey, entryId: target.id, source: options.source, provenance: options.provenance, recordedAt: target.updatedAt });
 		this.save();
 		if (counted && options.evidenceKey) this.saveEvidenceLedger();
@@ -342,10 +402,19 @@ export class WorkflowStore {
 		renameSync(temp, path);
 	}
 
-	private writeEntity(entity: LibraryEntity, level: 1 | 2 | 3): void {
-		const dir = join(this.rootDir, entityDir(level));
+	private entityPath(featureId: string, level: 1 | 2 | 3, id: string): string {
+		// Entity ids are already l<level>-prefixed; ids for workstrategies are
+		// ws-<slug>-prefixed. L1/L2 live in the feature dir (grouped by function);
+		// L3 WorkStrategies are stored independently in workstrategies/ while
+		// remaining indexed by the functional catalog via featureId.
+		if (level === 3) return join(this.rootDir, "workstrategies", `${id}.json`);
+		return join(this.rootDir, "features", featureId, `${id}.json`);
+	}
+
+	private writeEntity(entity: LibraryEntity, featureId: string, level: 1 | 2 | 3): void {
+		const dir = level === 3 ? join(this.rootDir, "workstrategies") : join(this.rootDir, "features", featureId);
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, `${entity.id}.json`), `${JSON.stringify(entity, null, "\t")}\n`);
+		writeFileSync(this.entityPath(featureId, level, entity.id), `${JSON.stringify(entity, null, "\t")}\n`);
 	}
 
 	save(): void {
@@ -362,12 +431,23 @@ export class WorkflowStore {
 	detectOrphans(): string[] {
 		const known = new Set(this.entries.map((e) => e.id));
 		const orphans: string[] = [];
-		for (const dir of ["atoms", "workflows", "orchestrations"] as const) {
-			const dirPath = join(this.rootDir, dir);
-			if (!existsSync(dirPath)) continue;
-			for (const file of readdirSync(dirPath)) {
+		const featuresRoot = join(this.rootDir, "features");
+		if (!existsSync(featuresRoot)) return orphans;
+		for (const featureId of readdirSync(featuresRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
+			const featureDir = join(featuresRoot, featureId);
+			for (const file of readdirSync(featureDir)) {
+				if (!/\.json$/.test(file)) continue;
+				// filenames are "<id>.json" (id is l<level>-prefixed)
 				const id = file.replace(/\.json$/, "");
-				if (!known.has(id)) orphans.push(id);
+				if (!known.has(id)) orphans.push(`${featureId}/${file}`);
+			}
+		}
+		const wsRoot = join(this.rootDir, "workstrategies");
+		if (existsSync(wsRoot)) {
+			for (const file of readdirSync(wsRoot)) {
+				if (!/\.json$/.test(file)) continue;
+				const id = file.replace(/\.json$/, "");
+				if (!known.has(id)) orphans.push(`workstrategies/${file}`);
 			}
 		}
 		return orphans;

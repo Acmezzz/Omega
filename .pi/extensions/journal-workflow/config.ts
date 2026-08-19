@@ -22,6 +22,8 @@ export interface JournalWorkflowConfig {
 	maxFragmentCharsPerRequest?: number;
 	maxFragmentsPerRequest?: number;
 	allowSensitiveFragments?: boolean;
+	/** Generate a memory log record at each context compaction. Default true. */
+	memoryOnCompact?: boolean;
 }
 
 interface SettingsFile {
@@ -39,7 +41,7 @@ interface SettingsFile {
 			maxFragmentCharsPerRequest?: number;
 			maxFragmentsPerRequest?: number;
 			allowSensitiveFragments?: boolean;
-
+			memoryOnCompact?: boolean;
 	};
 }
 
@@ -66,6 +68,7 @@ export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflo
 			maxFragmentCharsPerRequest: 3000,
 			maxFragmentsPerRequest: 3,
 			allowSensitiveFragments: false,
+			memoryOnCompact: true,
 		};
 
 	const settingsPath = join(agentDir, "settings.json");
@@ -88,6 +91,7 @@ export function loadConfig(agentDir: string = defaultAgentDir()): JournalWorkflo
 					maxFragmentCharsPerRequest: section.maxFragmentCharsPerRequest ?? defaults.maxFragmentCharsPerRequest,
 					maxFragmentsPerRequest: section.maxFragmentsPerRequest ?? defaults.maxFragmentsPerRequest,
 					allowSensitiveFragments: section.allowSensitiveFragments ?? defaults.allowSensitiveFragments,
+					memoryOnCompact: section.memoryOnCompact ?? defaults.memoryOnCompact,
 				});
 
 	} catch {

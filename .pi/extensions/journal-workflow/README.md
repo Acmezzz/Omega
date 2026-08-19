@@ -3,8 +3,8 @@
 `journal-workflow` 是一个独立的 Pi 扩展，负责正式任务的事实记录和可复用工作流演进：
 
 1. 记录主 Agent 实际收到和执行的正式事件；
-2. 在受控上下文中追加 LLM 语义提炼；
-3. 从历史任务提取、合并和维护 L1/L2/L3 工作流；
+2. 在触发上下文压缩时，从事实日志 + 备份预切片**提炼记忆日志**；
+3. 由用户手动 `/wf-extract`，基于**记忆日志**通过 LLM 一次生成 L1/L2/L3 工作流并跨功能分类；
 4. 在后续任务开始时匹配工作流并提供可验证的执行引导。
 
 它**不启动 Scout**，不注册 `explore_space` / `select_exploration`，不读取探索候选，也不会把探索选择自动算作 workflow evidence。探索空间由独立的 `exploration-scout` 负责。
@@ -15,13 +15,24 @@
 
 ```text
 Pi 生命周期事件
-  → append-only 事实 turn
-  → 受控截断与 fragment 索引
-  → LLM 语义 patch
-  → /wf-extract 提取与演进
+  → append-only 事实 turn（每回合自动）
+  → 受限备份 + 预切片 fragment（每回合自动）
+  → 记忆日志 MemoryRecord（触发上下文压缩时，LLM 从事实日志+备份切片刻量提炼）
+  → /wf-extract 基于记忆日志提取与演进（仅用户手动触发）
 ```
 
 程序直接保存事实，LLM 只追加 patch，不改写事实行。普通 journal 保存用户输入、assistant 正文、正式工具调用、参数、结果、状态、可见 reasoning、回合结果和未完成事项。长字段使用 head-tail 截断，并保留原文长度、截断信息和 fragment ID。
+
+### 记忆日志
+
+**记忆日志**是**工作流提取的唯一输入**，区别于主流 LLM 的"纯上下文压缩"：
+- **工具调用：完整、忠实、按真实时间顺序**，成功和失败都保留；
+- **工具结果：只总结**——成功记录"得到了什么"，失败分析"为什么失败"；
+- 用户输入 / LLM 思考 / 输出：LLM 提炼；
+- 被截断字段保留备份 fragment ID，需要时可回取完整原文。
+
+因为底层事实日志和备份始终在，压缩清除上文不会丢失信息。记忆日志 append-only 存储于
+`<journalsRoot>/<project-key>/<task-id>/memory/`，由 `session_before_compact` 事件触发生成。
 
 完整事件可以另外保存到受限备份。备份只包含扩展实际收到的内容；provider 没有返回或已经 redacted 的隐藏推理无法恢复。敏感 thinking/reasoning 默认不会提供给辅助提炼模型。
 
@@ -38,10 +49,27 @@ L3 编排      粗粒度、多阶段任务骨架；当前主要是 advisory skel
 当前实际支持程度：
 
 - **L1**：可直接作为轻量 guidance 使用；
-- **L2**：有运行时 tracker，可推进工具步骤、等待 checkpoint、重试、切换 L1 alternative 和 escape；
-- **L3**：可存储、分类和渲染骨架，但还没有完整的 phase tracker、阶段恢复和阶段级验证。
+- **L2**：有运行时 tracker，可推进工具步骤、等待 checkpoint、重试、切换 L1 alternative 和 escape；步骤可用 `run_code` 引用已保存的代码资产；
+- **L3（WorkStrategy）**：完整任务的方案（解题思路 + 注意事项 + 引用的 L2/L1），advisory 指导、不执行。
 
-功能目录由 `catalog.json` 维护，分类可以同时包含不同 level。`/wf-extract` 先匹配已有类别，再为无法归类的条目提议新类别；目录只保存摘要和 entry ID，不复制实体步骤。
+### 存储：按功能 + 渐进披露
+
+工作流**按功能（feature）存放**，而非按层级。每个实体命名带 `l<level>-` 前缀。一个任务贡献的 L1/L2/L3 可跨多个功能类别（例如"做题"的计算、统计、分析分属不同 feature）。渐进披露：先公开 `catalog.json`（功能摘要 + L 语义说明），用户选定功能后再读取其内部工作流。
+
+```text
+<workflowsRoot>/
+  catalog.json                 # 功能目录：label/description/aliases/levelSemantics + member ids
+  features/<feature-id>/
+    l1-<id>.json   l2-<id>.json
+  workstrategies/<ws-id>.json  # L3 完整任务方案，独立存放，仍被目录索引
+  code-assets/                 # 可复用代码资产（含真脚本文件）
+    asset-<id>.json   asset-<id>.<ext>
+  registry.json                # 扁平索引：id → {featureId, level, intent, status/usage/evidence}
+```
+
+L3（WorkStrategy）是**完整任务方案**，提供解题思路与注意事项，advisory 不执行；它单列 `workstrategies/` 目录，但同时带 `featureId` 从而仍能被渐进披露目录索引到。
+
+功能目录由 `catalog.json` 维护，分类可以同时包含不同 level（执行粒度与功能类别正交）。`/wf-extract` 由 LLM 一次性生成工作流并分配功能类别。
 
 工作流 registry 状态：
 
@@ -146,7 +174,7 @@ tracker 快照是**任务级、版本敏感的恢复**，不是跨版本迁移�
 <workflowsRoot>/.evidence-ledger.json
 ```
 
-manifest 当前为 version 2，记录 pipeline/schema/model/registry/catalog fingerprint。同一 project、同一批 task/seq、相同 fingerprint 和同一提炼状态再次执行时会返回 no-op；即使候选计算因新批次或版本变化重新运行，evidence ledger 也会按稳定 evidence key 防止同一来源重复计数。出现新回合、pending turn 状态变化或输入摘要变化后才重新运行。这个水位是**同一输入去重**，不是完整事务回滚；registry、实体和 catalog 的多文件提交仍可能在进程崩溃时处于部分完成状态。`--dry-run`/测试调用仍会计算候选，但不会写库或 manifest。
+manifest 当前为 version 3，记录 pipeline/schema/prompt/model fingerprint。同一 project、同一批记忆记录、相同 fingerprint 再次执行时会返回 no-op；即使候选计算因新批次或版本变化重新运行，evidence ledger 也会按稳定 evidence key 防止同一来源重复计数。出现新记忆记录或输入摘要变化后才重新运行。这个水位是**同一输入去重**，不是完整事务回滚；registry、实体和 catalog 的多文件提交仍可能在进程崩溃时处于部分完成状态。`--dry-run`/测试调用仍会计算候选，但不会写库或 manifest。
 
 提取恢复已有一个基础路径：`/wf-extract` 首先重新提炼 `extractedAt` 缺失的 turn。离线补提炼目前不自动重建前序 `PrevTurnContext`，因此跨回合语义可能比在线提炼更弱。
 
@@ -182,7 +210,8 @@ PI_CODING_AGENT_DIR=/path/to/agent
     "captureToolUpdates": false,
     "maxFragmentCharsPerRequest": 3000,
     "maxFragmentsPerRequest": 3,
-    "allowSensitiveFragments": false
+    "allowSensitiveFragments": false,
+    "memoryOnCompact": true
   }
 }
 ```
@@ -190,6 +219,7 @@ PI_CODING_AGENT_DIR=/path/to/agent
 - `enabled`：是否加载插件；
 - `workflowPolicy`：`workflow-first` 或 `off`；
 - `backupEnabled`：是否保存完整事件备份；
+- `memoryOnCompact`：是否在上下文压缩时同步生成记忆日志，默认 true；
 - `fragmentSize` / `fragmentOverlap`：预切片大小和重叠字符数；
 - `captureToolUpdates`：是否捕获高体积流式增量，默认关闭；
 - `maxFragmentCharsPerRequest` / `maxFragmentsPerRequest`：按需补片预算；
@@ -230,17 +260,18 @@ PI_CODING_AGENT_DIR=/path/to/agent
 ```bash
 cd .pi/extensions/journal-workflow
 npx tsc -p tsconfig.check.json # strict 类型检查
-npx vitest run                 # 58 项通过，3 项 live 测试按条件跳过
+npx vitest run                 # 62 项通过，3 项 live 测试按条件跳过
 ```
 
 核心入口：
 
 ```text
-index.ts / adapter.ts  Pi 生命周期、事件映射和 tracker 恢复
+index.ts / adapter.ts  Pi 生命周期、事件映射、内容压缩触发的记忆日志、tracker 恢复
 core/journal/          事实日志、备份、fragment、提炼
-core/library/          workflow schema、registry、catalog 和演进
+core/memory/           记忆日志：MemoryRecord、append-only 存储、压缩时提炼
+core/library/          workflow schema、按功能存储的 store、registry、catalog 和演进
 core/engine/           匹配、指导、checkpoint、alternative、escape
-core/extractor/        日志到工作流的提取、水位和目录维护
+core/extractor/        记忆日志 → L1/L2/L3 的 LLM 提炼、水位和目录维护
 commands.ts            /wf-* 命令
 ```
 
@@ -250,23 +281,27 @@ commands.ts            /wf-* 命令
 
 - append-only 事实日志与受控 patch；
 - head-tail 截断、fragment 索引和受限按需补片；
+- **记忆日志**：上下文压缩时从事实日志+备份切片刻量提炼，工具成败都忠实、结果只总结；
+- **按功能存储**：工作流按 feature 目录存放，命名带 `l<level>-`，渐进披露目录；
+- **L3 WorkStrategy**：完整任务方案独立存于 `workstrategies/`，解题思路 + 注意事项 + 引用 L2/L1，advisory；
+- **可复用代码资产**：提取时把模型写过的独立脚本存为 `code-assets/`（含真脚本文件），工作流步骤用 `run_code` 引用；
+- **LLM 单次提取** L1/L2/L3 并跨功能分类（输入仅记忆日志）；
 - L1/L2 匹配、L2 checkpoint/retry/alternative/escape；
 - task 级 tracker snapshot 恢复；
-- 同输入 extraction watermark；
-- level 隔离的 similarity 和 canonical merge；
-- 正交功能目录。
+- 同输入 extraction watermark（version 3）。
 
 ### 部分可用
 
 - backup 可记录和读取 fragment，但没有用户 restore/replay；
-- L3 可存储和渲染，但没有 phase tracker；
-- `/wf-extract` 可恢复 pending distill，但目录/registry 多文件写入仍非事务；
+- `/wf-extract` 依赖记忆日志已生成（上下文压缩后才提炼），目录/registry 多文件写入仍非事务；
+- 代码资产目前由 `run_code` 引用并由模型执行；尚无独立的真 `run_code` 工具执行器（按设计靠模型执行）；
 - 跨插件可以并行工作，但没有自动执行结果关联。
 
 ### 后续优先级
 
 1. backup event replay/restore 与未 flush turn 恢复；
 2. extraction phase checkpoint、增量证据 key 和 registry/catalog 事务提交；
-3. L3 phase tracker、阶段 checkpoint 和恢复；
-4. exploration selection 与正式 journal/验证结果的关联协议；
-5. 独立 `auxModel` 模型解析、并发锁和 retention/清理策略。
+3. exploration selection 与正式 journal/验证结果的关联协议；
+4. 独立 `auxModel` 模型解析、并发锁和 retention/清理策略；
+5. 记忆日志与 work 结果自动回写 `verifiedOutcome`；
+6. 代码资产的跨任务复用校验与清理策略。

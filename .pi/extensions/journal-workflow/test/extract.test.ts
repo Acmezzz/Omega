@@ -1,191 +1,157 @@
 /**
- * X1/X2: segmentation & co-occurrence mining (X1) and the extraction
- * pipeline over the session corpus (X2), with a routing fake LLM.
+ * X: extraction over the memory log (sole input).
+ * Builds fact turns → memory records → runs the single-pass LLM synthesis
+ * extraction and verifies the three granularities land in feature dirs and the
+ * catalog is updated, plus watermark/evidence idempotency.
  */
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { alignSkeletons, coOccurrence, findRecurringPatterns, toolSequenceOfTurn } from "../core/extractor/segment.ts";
 import { runExtraction } from "../core/extractor/extract.ts";
+import { synthesizeLibrary, SYNTHESIZE_SYSTEM_PROMPT } from "../core/extractor/pack.ts";
 import { WorkflowStore } from "../core/library/store.ts";
-import { listTasks, readTask } from "../core/journal/writer.ts";
-import type { TurnRecord } from "../core/journal/types.ts";
-import { RouterLlm, type LlmCallInput } from "./helpers/fake-llm.ts";
-import { CORPUS_PROJECT_KEY, buildCorpus } from "./helpers/corpus.ts";
+import { MemoryWriter } from "../core/memory/writer.ts";
+import { JournalWriter } from "../core/journal/writer.ts";
+import { RouterLlm } from "./helpers/fake-llm.ts";
 
-const seedDir = fileURLToPath(new URL("../fixtures/workflows/seed", import.meta.url));
+const PROJECT = "--G--try-agent-demo--";
 let root: string;
 
-beforeAll(async () => {
-	root = mkdtempSync(join(tmpdir(), "jw-extract-"));
-	await buildCorpus(join(root, "journals"));
+beforeAll(() => {
+	root = mkdtempSync(join(tmpdir(), "jw-extract2-"));
 });
 
 afterAll(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
-function distilledTurns(): TurnRecord[] {
-	const turns: TurnRecord[] = [];
-	for (const dir of listTasks(join(root, "journals"), CORPUS_PROJECT_KEY)) {
-		const result = readTask(dir);
-		turns.push(...result.turns);
-	}
-	return turns;
+/** Write a memory record directly into a task's memory dir. */
+function seedMemory(taskId: string, tools: Array<{ tool: string; status: "success" | "error"; resultSummary: string | null; failureAnalysis: string | null; significance: string | null }>): void {
+	// A real task dir carries a journal; extraction keys per-task via task.json.
+	new JournalWriter(root, PROJECT, taskId);
+	const w = new MemoryWriter(root, PROJECT, taskId);
+	w.append({
+		spanFromTurnSeq: 1,
+		spanToTurnSeq: 1,
+		userIntent: "修复登录崩溃",
+		thinking: "先跑测试再定位",
+		memories: ["空密码导致 login.ts 崩溃"],
+		tools: tools.map((t, i) => ({
+			index: i,
+			turnSeq: 1,
+			refSequence: i + 1,
+			tool: t.tool,
+			status: t.status,
+			args: "args",
+			resultSummary: t.resultSummary,
+			failureAnalysis: t.failureAnalysis,
+			intent: null,
+			significance: t.significance as never,
+		})),
+		sourceTurns: [1],
+	});
 }
 
-describe("X1: segmentation & pattern mining", () => {
-	it("counts adjacent tool pairs across distinct turns", () => {
-		const sequences = distilledTurns().map(toolSequenceOfTurn);
-		expect(sequences).toHaveLength(6);
-		const counts = coOccurrence(sequences, 2);
-		expect(counts.get("bash|grep")).toBe(5);
-		expect(counts.get("grep|read")).toBe(5);
-		expect(counts.get("read|edit")).toBe(3);
-		expect(counts.get("edit|bash")).toBe(3);
+describe("X: extraction from memory log", () => {
+	it("synthesizes and persists L1/L2/L3 across features, then watermark-skips re-run", async () => {
+		// One task contributes three granularities across two business features.
+		seedMemory("task-mixed", [
+			{ tool: "bash", status: "error", resultSummary: null, failureAnalysis: "测试失败：空密码崩溃", significance: "essential" },
+			{ tool: "bash", status: "success", resultSummary: "拿到失败信息", failureAnalysis: null, significance: "essential" },
+			{ tool: "grep", status: "success", resultSummary: "定位登录相关代码", failureAnalysis: null, significance: "helpful" },
+		]);
+
+		const llm = new RouterLlm((input) => {
+			if (!input.systemPrompt.startsWith("You distill a reusable workflow library")) return "{}";
+			expect(input.userPayload).toContain("修复登录崩溃"); // memory log is the sole input
+			return JSON.stringify({
+				features: [
+					{ id: "feature-repro", label: "缺陷复现", description: "复现与确认失败", aliases: [], levelSemantics: "L1/L2/L3 是执行粒度" },
+					{ id: "feature-navigation", label: "代码导航", description: "定位理解代码", aliases: [] },
+				],
+				codeAssets: [
+					{ id: "asset-repro-shell", name: "复现脚本", language: "sh", summary: "一键复现登录崩溃", code: "npm test -- AuthLogin" },
+				],
+				workflows: [
+					{ id: "l1-locate-symbol", featureId: "feature-navigation", level: 1, intent: "定位符号", calls: [{ tool: "grep", argsTemplate: "(grep)" }], variants: [] },
+					{ id: "l2-fix-failing-test", featureId: "feature-repro", level: 2, intent: "修复失败测试", steps: [{ intent: "复现失败", action: { tool: "run_code", argsTemplate: "{codeAsset:asset-repro-shell}" }, expect: "test" }] },
+					{ id: "ws-debug-login", featureId: "feature-repro", level: 3, intent: "调试登录崩溃", reasoning: "先复现拿到失败信息，再定位崩溃点，修复后回归", caveats: ["保留失败现场"], steps: [{ intent: "复现失败", ref: "l2-fix-failing-test", note: "先跑复现脚本" }] },
+				],
+			});
+		});
+
+		const workflowsRoot = join(root, "workflows");
+		const store = WorkflowStore.createEmpty(workflowsRoot);
+		const report = await runExtraction({ journalsRoot: root, projectKey: PROJECT, store, llm });
+
+		expect(report.tasksScanned).toBeGreaterThanOrEqual(1);
+		expect(report.memoryRecords).toBeGreaterThanOrEqual(1);
+		expect(report.l1Created).toContain("l1-locate-symbol");
+		expect(report.l2Created).toContain("l2-fix-failing-test");
+		expect(report.l3Created).toContain("ws-debug-login");
+		expect(report.codeAssetsCreated).toContain("asset-repro-shell");
+		expect(report.catalogFeaturesCreated).toEqual(["feature-repro", "feature-navigation"]);
+
+		// L1 stays under features/<featureId>/<id>.json
+		expect(existsSync(join(workflowsRoot, "features", "feature-navigation", "l1-locate-symbol.json"))).toBe(true);
+		// WorkStrategy is stored independently in workstrategies/
+		expect(existsSync(join(workflowsRoot, "workstrategies", "ws-debug-login.json"))).toBe(true);
+		expect(store.getL3("ws-debug-login")?.reasoning).toContain("再定位崩溃点");
+		expect(store.getEntry("ws-debug-login")?.featureId).toBe("feature-repro");
+		// code asset written as a true script file on disk + index json
+		expect(existsSync(join(workflowsRoot, "code-assets", "asset-repro-shell.json"))).toBe(true);
+		expect(existsSync(join(workflowsRoot, "code-assets", "asset-repro-shell.sh"))).toBe(true);
+		expect(store.getL2("l2-fix-failing-test")?.steps).toHaveLength(1);
+		expect(store.getEntry("l2-fix-failing-test")?.featureId).toBe("feature-repro");
+
+		// progressive disclosure: catalog lists the two features with L semantics
+		const catalog = store.getCatalogFeatures();
+		expect(catalog.find((f) => f.id === "feature-repro")?.levelSemantics).toBe("L1/L2/L3 是执行粒度");
+		expect(catalog.find((f) => f.id === "feature-navigation")?.entryIds).toContain("l1-locate-symbol");
+
+		// watermark idempotency: identical re-run is a no-op (no double evidence)
+		const evBefore = store.getEntry("l1-locate-symbol")!.evidence;
+		const again = await runExtraction({ journalsRoot: root, projectKey: PROJECT, store, llm });
+		expect(again.catalogPhaseSkipped).toBe("watermark-unchanged");
+		expect(store.getEntry("l1-locate-symbol")!.evidence).toBe(evBefore);
 	});
 
-	it("finds recurring patterns at threshold 3 (the B+C cross-boundary demo)", () => {
-		const sequences = distilledTurns().map(toolSequenceOfTurn);
-		const patterns = findRecurringPatterns(sequences, 2, 3);
-		const toolKeys = patterns.map((p) => p.tools.join("|"));
-		expect(toolKeys).toContain("grep|read"); // the locate-symbol combo
-		expect(toolKeys).toContain("bash|grep");
-		expect(patterns.every((p) => p.count >= 3)).toBe(true);
+	it("dryRun leaves the library untouched", async () => {
+		seedMemory("task-dry", [
+			{ tool: "grep", status: "success", resultSummary: "定位", failureAnalysis: null, significance: "helpful" },
+		]);
+		const workflowsRoot = join(root, "wf-dry");
+		const store = WorkflowStore.createEmpty(workflowsRoot);
+		const llm = new RouterLlm(() => JSON.stringify({
+			features: [{ id: "feature-nav", label: "代码导航", description: "定位", aliases: [] }],
+			workflows: [{ id: "l1-grep-read", featureId: "feature-nav", level: 1, intent: "locate", calls: [{ tool: "grep", argsTemplate: "(grep)" }], variants: [] }],
+		}));
+		const dry = await runExtraction({ journalsRoot: root, projectKey: PROJECT, store, llm, dryRun: true });
+		expect(dry.l1Created).toContain("l1-grep-read");
+		// dryRun reports but never writes (registry stays empty; no entity files)
+		expect(WorkflowStore.load(workflowsRoot).getRegistry()).toHaveLength(0);
+		expect(existsSync(join(workflowsRoot, "catalog.json"))).toBe(false);
 	});
 
-	it("aligns completed-task skeletons via LCS fold", () => {
-		const completed = [
-			["bash", "grep", "read", "edit", "bash"],
-			["bash", "grep", "read", "edit", "bash"],
-			["bash", "grep", "read"],
-			["bash", "grep", "read", "edit", "bash"],
-		];
-		expect(alignSkeletons(completed)).toEqual(["bash", "grep", "read"]);
+	it("no memory log is a no-op (skipped)", async () => {
+		const store = WorkflowStore.createEmpty(join(root, "wf-empty"));
+		const llm = new RouterLlm(() => "{}");
+		const report = await runExtraction({ journalsRoot: join(root, "empty"), projectKey: "no-such-project", store, llm });
+		expect(report.memoryRecords).toBe(0);
+		expect(report.catalogPhaseSkipped).toBe("no-memory-log");
 	});
 });
 
-function extractionRouterLlm(): RouterLlm {
-	return new RouterLlm((input: LlmCallInput) => {
-		const payload = JSON.parse(input.userPayload) as Record<string, unknown>;
-		if (input.systemPrompt.startsWith("You name a reusable tool-combo")) {
-			const tools = payload.recurringTools as string[];
-			return JSON.stringify({
-				id: `l1-${tools.join("-")}`,
-				intent: `组合：${tools.join("→")}`,
-				calls: tools.map((t) => ({ tool: t, argsTemplate: `(${t} 调用)` })),
-				expect: null,
-			});
-		}
-		if (input.systemPrompt.startsWith("You judge whether")) {
-			const candidate = typeof payload.candidate === "string" ? payload.candidate : "";
-			// The grep→read combo is the seed's locate-symbol → merge instead of create.
-			if (candidate.includes("grep→read")) {
-				return JSON.stringify({ similarTo: "l1-locate-symbol" });
-			}
-			return JSON.stringify({ similarTo: null });
-		}
-		if (input.systemPrompt.startsWith("You convert successful task logs")) {
-			return JSON.stringify({
-				id: "l2-login-crash",
-				intent: "修复登录类崩溃",
-				steps: [
-					{ intent: "复现失败", tool: "bash", expect: null },
-					{ intent: "定位代码", tool: "grep", expect: null },
-					{ intent: "修复", tool: "edit", expect: null },
-					{ intent: "验证", tool: "bash", expect: "测试通过" },
-				],
-			});
-		}
-			if (input.systemPrompt.startsWith("You create flat functional catalog categories")) {
-				return JSON.stringify({
-					assignments: [{ entryId: "l1-locate-symbol", featureIds: ["feature-code-navigation"] }],
-					newFeatures: [{ id: "feature-code-navigation", label: "代码导航", description: "定位和理解代码", aliases: ["代码定位"] }],
-				});
-			}
-			if (input.systemPrompt.startsWith("You assign workflow entries to an existing")) {
-				return JSON.stringify({ assignments: [], unmatchedEntryIds: [] });
-			}
-			if (input.systemPrompt.startsWith("A workflow step failed")) {
-				return JSON.stringify({ alternative: "l1-bash-grep", note: "先复现拿到输出再定位" });
-			}
-
-		return JSON.stringify({});
-	});
-}
-
-describe("X2: extraction pipeline over the session corpus", () => {
-	it("mines patterns, merges the known combo, creates new entries, learns an alternative", async () => {
-		const workflowsRoot = join(root, "workflows");
-		cpSync(seedDir, workflowsRoot, { recursive: true });
-		const store = WorkflowStore.load(workflowsRoot);
-		const locateBefore = store.getEntry("l1-locate-symbol")!.evidence;
-
-		const report = await runExtraction({
-			journalsRoot: join(root, "journals"),
-			projectKey: CORPUS_PROJECT_KEY,
-			store,
-			llm: extractionRouterLlm(),
+describe("synthesizeLibrary prompt surface", () => {
+	it("accepts memory records and exposes the synthesis prompt", async () => {
+		const records = [{ seq: 1, spanFromTurnSeq: 1, spanToTurnSeq: 1, generatedAt: "", userIntent: "x", thinking: null, memories: [], tools: [], sourceTurns: [1] }] as never as Parameters<typeof synthesizeLibrary>[0];
+		const llm = new RouterLlm((input) => {
+			expect(input.systemPrompt).toBe(SYNTHESIZE_SYSTEM_PROMPT);
+			return JSON.stringify({ features: [], workflows: [] });
 		});
-
-		expect(report.tasksScanned).toBe(4);
-		expect(report.turnsDistilled).toBe(6);
-		expect(report.turnsPendingDistill).toBe(0);
-		expect(report.completedTasks).toBe(4);
-		expect(report.skeleton).toEqual(["bash", "grep", "read"]);
-
-		// grep→read merged into the seed L1 (evidence grows, no new entry)
-		expect(report.mergedInto).toContain("l1-locate-symbol");
-		expect(store.getEntry("l1-locate-symbol")!.evidence).toBe(locateBefore + 1);
-
-		// other patterns created as probation L1s
-		expect(report.l1Created).toEqual(["l1-bash-grep", "l1-read-edit", "l1-edit-bash"]);
-		for (const id of report.l1Created) {
-			expect(store.getEntry(id)?.status).toBe("probation");
-			expect(store.getL1(id)!.calls.length).toBeGreaterThan(0);
-		}
-
-		// skeleton produced a new L2 (judge said "not similar")
-		expect(report.l2Created).toEqual(["l2-login-crash"]);
-		expect(store.getEntry("l2-login-crash")?.status).toBe("probation");
-		expect(store.getL2("l2-login-crash")!.steps).toHaveLength(4);
-
-			expect(report.catalogFeaturesCreated).toContain("feature-code-navigation");
-			expect(report.catalogEntriesAssigned).toContain("l1-locate-symbol→feature-code-navigation");
-			expect(store.getCatalogFeatures().find((feature) => feature.id === "feature-code-navigation")?.entryIds).toContain("l1-locate-symbol");
-
-			// failure replay attached an alternative to the seed workflow's step 0
-			expect(report.alternativesProposed).toEqual([
-
-			{ workflowId: "l2-fix-failing-test", stepIndex: 0, alternative: "l1-bash-grep" },
-		]);
-		expect(store.getL2("l2-fix-failing-test")!.steps[0].alternative).toBe("l1-bash-grep");
-
-			const evidenceAfter = store.getEntry("l1-locate-symbol")!.evidence;
-			const second = await runExtraction({ journalsRoot: join(root, "journals"), projectKey: CORPUS_PROJECT_KEY, store, llm: extractionRouterLlm() });
-			expect(second.mergedInto).toEqual([]);
-			expect(store.getEntry("l1-locate-symbol")!.evidence).toBe(evidenceAfter);
-			const manifestPath = join(workflowsRoot, "manifests", `${CORPUS_PROJECT_KEY}.json`);
-			expect(existsSync(manifestPath)).toBe(true);
-			expect(JSON.parse(readFileSync(manifestPath, "utf8")).version).toBe(2);
-			expect(existsSync(join(workflowsRoot, ".extraction-manifest.json"))).toBe(false);
-		});
-
-	it("dryRun leaves the library untouched", async () => {
-		const workflowsRoot = join(root, "workflows-dry");
-		cpSync(seedDir, workflowsRoot, { recursive: true });
-		const store = WorkflowStore.load(workflowsRoot);
-		const before = JSON.stringify(store.getRegistry());
-		const report = await runExtraction({
-			journalsRoot: join(root, "journals"),
-			projectKey: CORPUS_PROJECT_KEY,
-			store,
-			llm: extractionRouterLlm(),
-			dryRun: true,
-		});
-		expect(report.l1Created.length + report.l2Created.length).toBeGreaterThan(0);
-		expect(JSON.stringify(WorkflowStore.load(workflowsRoot).getRegistry())).toBe(before);
+		const result = await synthesizeLibrary(records, llm);
+		// empty workflows => parse returns null
+		expect(result).toBeNull();
 	});
 });
