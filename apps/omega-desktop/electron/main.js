@@ -84,7 +84,10 @@ async function createWindow() {
 	win.show();
 	if (process.env.OMEGA_AUTOTEST === "1" && session) {
 		win.webContents.once("did-finish-load", () => { setTimeout(() => { void promptInternal("Reply with exactly: hello from omega-desktop"); }, 500); });
-		setTimeout(() => { process.stdout.write("[main] autotest done, quitting\n"); void shutdown(); }, 25_000);
+      setTimeout(() => {
+        process.stdout.write("[main] autotest done, quitting\n");
+        void shutdown().finally(() => app.quit());
+      }, 25_000);
 	}
 }
 

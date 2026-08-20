@@ -25,6 +25,7 @@ packages/ai/src/providers/.model-generation-*/
 *~
 
 # Package specific
+apps/omega-desktop/release/
 .npm/
 coverage/
 .nyc_output/
