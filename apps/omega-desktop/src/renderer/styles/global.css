@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: #f3f6fb;
+  background: radial-gradient(circle at 10% 0%, #1b2740 0, transparent 36%), #0d1016;
+  font: 14px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Markdown rendering inside message bubbles */
+.md-body {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.md-body p {
+  margin: 0 0 0.6em;
+}
+.md-body p:last-child {
+  margin-bottom: 0;
+}
+.md-body pre {
+  margin: 0.6em 0;
+  border-radius: 12px;
+  border: 1px solid #2b3444;
+  background: #0d1016;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+.md-body code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+}
+.md-body :not(pre) > code {
+  background: rgba(134, 169, 255, 0.12);
+  padding: 1px 5px;
+  border-radius: 6px;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0 0 0.6em;
+  padding-left: 1.3em;
+}
+.md-body table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  width: 100%;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid #2b3444;
+  padding: 6px 10px;
+  text-align: left;
+}
+.md-body a {
+  color: #86a9ff;
+}
+.md-body blockquote {
+  margin: 0.6em 0;
+  padding-left: 12px;
+  border-left: 3px solid #3a465b;
+  color: #8d99ad;
+}
+
+/* Thin scrollbars */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: #3a465b;
+  background-clip: padding-box;
+}

@@ -4,54 +4,18 @@
   <meta charset="utf-8" />
   <meta name="color-scheme" content="dark" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'" />
+  <!--
+    CSP (system_design.md §1.1 / 安全红线):
+      - default-src 'self'; script-src 'self'  → no inline scripts, no eval.
+      - style-src 'self' 'nonce-omega-static-2026' → MUI/emotion inject <style>
+        with this SAME static nonce; still NO 'unsafe-inline' / 'unsafe-eval'.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'nonce-omega-static-2026'; object-src 'none'; base-uri 'none'; form-action 'self'" />
   <title>Omega Desktop</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./dist/assets/index.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <header class="app-header">
-      <div class="brand-lockup">
-        <div class="brand-mark" aria-hidden="true">Ω</div>
-        <div>
-          <div class="brand-name">Omega</div>
-          <div class="brand-subtitle">Agent workspace</div>
-        </div>
-      </div>
-      <div class="header-status" id="connection-status" role="status" aria-live="polite">
-        <span class="status-dot status-dot--connecting" aria-hidden="true"></span>
-        <span id="connection-label">连接中</span>
-      </div>
-    </header>
-
-    <main class="chat-panel" aria-label="对话消息">
-      <div id="empty-state" class="empty-state">
-        <div class="empty-orbit" aria-hidden="true"><span>Ω</span></div>
-        <h1>开始与 Omega 协作</h1>
-        <p>描述一个问题、目标或需要探索的方向，Agent 会在当前工作区中协助你。</p>
-        <div class="suggestions" aria-label="示例提示">
-          <button class="suggestion" type="button" data-prompt="检查当前项目的测试状态">检查当前项目的测试状态</button>
-          <button class="suggestion" type="button" data-prompt="分析最近一次失败的原因">分析最近一次失败的原因</button>
-        </div>
-      </div>
-      <section id="log" class="message-list" role="log" aria-live="off" aria-label="Agent 消息"></section>
-      <button id="jump-latest" class="jump-latest" type="button" hidden>↓ 跳到最新消息</button>
-    </main>
-
-    <div id="generation-status" class="generation-status" role="status" aria-live="polite"></div>
-    <form id="composer" class="composer" autocomplete="off">
-      <label class="sr-only" for="input">输入消息</label>
-      <textarea id="input" rows="1" maxlength="40000" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）" aria-label="输入消息"></textarea>
-      <button id="send" class="send-button" type="submit" aria-label="发送消息">
-        <span class="send-icon" aria-hidden="true">↑</span>
-        <span>发送</span>
-      </button>
-    </form>
-    <footer class="app-footer">
-      <span>只读状态和工具事件会显示在这里</span>
-      <span id="event-counter">0 events</span>
-    </footer>
-  </div>
-  <script src="./renderer.js"></script>
+  <div id="root"></div>
+  <script src="./dist/assets/index.js"></script>
 </body>
 </html>

@@ -2,23 +2,48 @@
   "name": "@omega/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Secure local Electron desktop shell for Omega Agent",
+  "description": "Secure local Electron desktop shell for Omega Agent (React + MUI + Tailwind workbench)",
   "author": "Omega",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "typecheck": "node --check electron/main.js && node --check electron/agent-bridge.js && node --check electron/preload.js && node --check renderer.js",
+    "build:renderer": "vite build",
+    "watch:renderer": "vite build --watch",
+    "dev": "vite build --watch",
+    "typecheck": "node --check electron/main.js && node --check electron/agent-bridge.js && node --check electron/preload.js && node --check electron/state-reader.js && node --check electron/diff-service.js && node --check electron/persistence.js",
+    "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
     "test": "node --test test/*.test.mjs",
     "sdk-check": "node scripts/sdk-check.mjs",
     "package:dir": "electron-builder --dir",
     "package": "electron-builder"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2"
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@emotion/cache": "11.13.5",
+    "@emotion/react": "11.13.5",
+    "@emotion/styled": "11.13.5",
+    "@mui/icons-material": "5.16.7",
+    "@mui/material": "5.16.7",
+    "clsx": "2.1.1",
+    "highlight.js": "11.10.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-markdown": "9.0.1",
+    "rehype-highlight": "7.0.1",
+    "remark-gfm": "4.0.0",
+    "zustand": "4.5.5"
   },
   "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "autoprefixer": "10.4.20",
     "electron": "43.4.1",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "postcss": "8.4.49",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.6.3",
+    "vite": "5.4.11"
   }
 }

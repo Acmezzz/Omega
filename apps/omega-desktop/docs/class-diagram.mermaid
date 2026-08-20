@@ -1,0 +1,247 @@
+classDiagram
+  %% ===== 受控 DTO（渲染进程只读） =====
+  class WorkflowCatalog {
+    version: number
+    updatedAt: string
+    features: CatalogFeature[]
+  }
+  class CatalogFeature {
+    id: string
+    label: string
+    description: string
+    aliases: string[]
+    levelSemantics: string
+    entryIds: string[]
+    updatedAt: string
+  }
+  class WorkflowRegistry {
+    entries: RegistryEntry[]
+  }
+  class RegistryEntry {
+    id: string
+    featureId: string
+    level: "1|2|3"
+    intent: string
+    evidence: number
+    usage: number
+    escapes: number
+    status: "probation|active|deprecated"
+    updatedAt: string
+  }
+  class WorkflowTracker {
+    workflowId: string
+    intent: string
+    stepCount: number
+    currentIndex: number
+    retryCounts: Record~string,number~
+    expanded: string[]
+    alternativeId: string
+    alternativeTools: string[]
+    escaped: boolean
+    updatedAt: string
+  }
+  class WorkflowMemoryCoverage {
+    distilledUpTo: number
+    stale: boolean
+    segments: CoverageSegment[]
+  }
+  class WorkflowStats {
+    projectKey: string
+    tasks: number
+    turns: number
+    pendingDistill: number
+    escapes: EscapedItem[]
+    generatedAt: string
+  }
+  class WorkflowHealth {
+    status: "ok|warn|error"
+    projectKey: string
+    roots: object
+    summary: object
+    issues: HealthIssue[]
+  }
+  class HealthIssue {
+    code: string
+    severity: "info|warning|error"
+    path: string
+    detail: string
+  }
+  class ScoutStatus {
+    enabled: boolean
+    policy: "manual|explore-first|off"
+    mode: "active|inactive"
+    currentRoundId: string
+    projectKey: string
+    maxRoundsPerTask: number
+  }
+  class ScoutRounds {
+    rounds: ScoutRoundView[]
+    currentRound: ScoutRoundView
+    skippedLines: number
+    invalidSelections: number
+  }
+  class ScoutRoundView {
+    roundId: string
+    taskId: string
+    projectKey: string
+    trigger: string
+    taskBrief: object
+    model: string
+    prior: object
+    runs: ScoutRunView[]
+    adoptedProposalIds: string[]
+    combinedPlanSummary: string
+    verifiedOutcome: string
+    selection: object
+  }
+  class ScoutRunView {
+    scoutId: string
+    angle: string
+    status: string
+    toolCallCount: number
+    durationMs: number
+    proposalCount: number
+    proposals: Proposal[]
+  }
+  class Proposal {
+    id: string
+    idea: string
+    steps: string[]
+    assumptions: string[]
+    expectedEvidence: string[]
+    disqualifiers: string[]
+    probes: ProbeRecord[]
+    closureStatus: string
+  }
+  class ScoutProposals {
+    roundId: string
+    proposals: Proposal[]
+  }
+  class AgentPermissionState {
+    available: boolean
+    mode: "default|elevated|restricted"
+    toolsAllowed: string[]
+    note: string
+  }
+  class AgentPlan {
+    available: boolean
+    steps: string[]
+    source: "event|derived|none"
+    note: string
+  }
+  class WorkspaceDiff {
+    generatedAt: string
+    repoRoot: string
+    isGitRepo: boolean
+    files: DiffFile[]
+  }
+  class DiffFile {
+    path: string
+    status: "added|modified|deleted|renamed"
+    additions: number
+    deletions: number
+    hunks: DiffHunk[]
+  }
+  class ChangeApprovalResult {
+    applied: boolean
+    action: "accept|reject"
+    revertedFiles: string[]
+    errors: string[]
+  }
+
+  WorkflowCatalog "1" *-- "many" CatalogFeature
+  WorkflowRegistry "1" *-- "many" RegistryEntry
+  WorkflowHealth "1" *-- "many" HealthIssue
+  ScoutRounds "1" *-- "many" ScoutRoundView
+  ScoutRoundView "1" *-- "many" ScoutRunView
+  ScoutRunView "1" *-- "many" Proposal
+
+  %% ===== 主进程服务（特权，产生 DTO） =====
+  class StateReader {
+    +readWorkflowCatalog() WorkflowCatalog
+    +readWorkflowRegistry() WorkflowRegistry
+    +readTracker() WorkflowTracker
+    +readCoverage() WorkflowMemoryCoverage
+    +readStats() WorkflowStats
+    +readHealth() WorkflowHealth
+    +readScoutStatus() ScoutStatus
+    +readScoutRounds() ScoutRounds
+    +readScoutProposals() ScoutProposals
+  }
+  class DiffService {
+    +computeDiff(cwd) WorkspaceDiff
+    +revertFiles(files) ChangeApprovalResult
+  }
+  class Persistence {
+    +list() SessionSummary[]
+    +create(req) SessionRecord
+    +load(id) SessionRecord
+    +save(rec)
+    +delete(id)
+  }
+  class AgentBridge {
+    +createSession()
+    +toRendererEvent(e) SafeEvent
+    +streamToRenderer()
+  }
+  class ElectronMain {
+    +ipcMain.handle("omega:*")
+  }
+
+  StateReader ..> WorkflowCatalog : produces
+  StateReader ..> WorkflowRegistry : produces
+  StateReader ..> WorkflowTracker : produces
+  StateReader ..> WorkflowMemoryCoverage : produces
+  StateReader ..> WorkflowStats : produces
+  StateReader ..> WorkflowHealth : produces
+  StateReader ..> ScoutStatus : produces
+  StateReader ..> ScoutRounds : produces
+  StateReader ..> ScoutProposals : produces
+  DiffService ..> WorkspaceDiff : produces
+  DiffService ..> ChangeApprovalResult : produces
+  Persistence ..> SessionRecord : manages
+  ElectronMain ..> StateReader
+  ElectronMain ..> DiffService
+  ElectronMain ..> Persistence
+  AgentBridge ..> SafeEvent : emits
+
+  %% ===== 渲染进程 =====
+  class IpcClient {
+    +prompt()
+    +queryExtensionState()
+    +listSessions()
+    +newSession()
+    +loadSession()
+    +saveSession()
+    +deleteSession()
+    +diffWorkspace()
+    +approveChange()
+  }
+  class AppStore {
+    +sessions
+    +activeSessionId
+    +messages
+    +toolCards
+    +extensionState
+    +diff
+    +connection
+  }
+  class Workbench
+  class ChatPanel
+  class WorkflowPanel
+  class ScoutPanel
+  class DiffViewer
+  class SessionList
+
+  IpcClient ..> WorkflowCatalog : returns
+  IpcClient ..> WorkspaceDiff : returns
+  IpcClient ..> SessionRecord : returns
+  AppStore o-- "holds" WorkflowCatalog
+  AppStore o-- "holds" WorkspaceDiff
+  Workbench --> ChatPanel
+  Workbench --> WorkflowPanel
+  Workbench --> ScoutPanel
+  Workbench --> DiffViewer
+  Workbench --> SessionList
+  ChatPanel --> ToolCard
+  AppStore <.. Workbench : subscribes

@@ -1,0 +1,71 @@
+sequenceDiagram
+    autonumber
+    participant R as Renderer(App+Store)
+    participant IPC as IpcClient(window.omega)
+    participant M as Main(ipcMain)
+    participant B as AgentBridge
+    participant S as AgentSession(SDK)
+    participant SR as StateReader
+    participant XF as ExtStateFiles(append-only)
+    participant D as DiffService
+    participant G as Git
+    participant P as Persistence
+
+    Note over M: bootstrap: createSession + 注册 omega:* handlers
+
+    %% 对话事件流
+    R->>IPC: prompt(text)
+    IPC->>M: invoke agent:prompt
+    M->>S: prompt(text)
+    S-->>M: event stream(session_start..tool_execution_*..message_*)
+    M->>M: toRendererEvent (净化 + tool_execution_summary)
+    M-->>R: send agent:event (safe DTO)
+    R->>R: AppStore.append(message / toolCard)
+
+    %% 扩展状态查询（pull）
+    R->>IPC: queryExtensionState({scope})
+    IPC->>M: invoke omega:queryExtensionState
+    M->>SR: read*(projectKey, taskId)
+    SR->>XF: read catalog/registry/tracker/coverage/rounds.jl
+    XF-->>SR: raw state files
+    SR-->>M: DTOs (无 thinking / 无 rawOutput)
+    M-->>R: IpcResult.data = {workflow_*, scout_*}
+    R->>R: AppStore.set extensionState
+
+    %% diff 预览（pull, read-only）
+    R->>IPC: diffWorkspace()
+    IPC->>M: invoke omega:diffWorkspace
+    M->>D: computeDiff(cwd)
+    D->>G: git diff --unified=3 --no-color
+    G-->>D: unified output
+    D-->>M: WorkspaceDiff (structured)
+    M-->>R: IpcResult.data
+    R->>R: AppStore.set diff
+
+    %% 审批（reject 走主进程特权）
+    alt action = reject
+        R->>IPC: approveChange({action:'reject', files})
+        IPC->>M: invoke omega:approveChange
+        M->>D: revertFiles(files)
+        D->>G: git checkout -- <file> (仅 git 跟踪文件)
+        G-->>D: reverted
+        D-->>M: ChangeApprovalResult
+        M-->>R: IpcResult.data
+    else action = accept
+        R->>IPC: approveChange({action:'accept'})
+        IPC->>M: invoke omega:approveChange
+        M-->>R: IpcResult.data (保留改动, no-op)
+    end
+
+    %% 会话持久化
+    R->>IPC: newSession({title, workspace})
+    IPC->>M: invoke omega:newSession
+    M->>P: create(record)
+    P-->>M: SessionRecord
+    M-->>R: IpcResult.data
+
+    R->>IPC: saveSession({sessionId, transcript})
+    IPC->>M: invoke omega:saveSession
+    M->>P: save(record)
+    P-->>M: ok
+    M-->>R: IpcResult
