@@ -19,9 +19,10 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LlmClient } from "../llm.ts";
-import { readTaskMemory } from "../memory/index.ts";
 import { listTasks, readTask } from "../journal/writer.ts";
 import { WorkflowStore } from "../library/store.ts";
+import { readCoverage as readTaskCoverage, isFullyCovered } from "../memory/writer.ts";
+import { readTaskMemory } from "../memory/index.ts";
 import type { L1Template, L2Workflow, WorkStrategy, CodeAsset } from "../library/types.ts";
 import { synthesizeLibrary, l1FromCalls, l2FromSteps, workStrategyFrom, SYNTHESIZE_SYSTEM_PROMPT, type SynthesisResult } from "./pack.ts";
 
@@ -45,13 +46,15 @@ export interface ExtractOptions {
 	store: WorkflowStore;
 	llm: LlmClient;
 	dryRun?: boolean;
+	/** Default false: only tasks with fully-covered memory log are consumed. */
+	allowPartial?: boolean;
 }
 
-const EXTRACTION_PIPELINE_VERSION = "3";
-const EXTRACTION_SCHEMA_VERSION = "3";
+const EXTRACTION_PIPELINE_VERSION = "4";
+const EXTRACTION_SCHEMA_VERSION = "4";
 
 interface ExtractionManifest {
-	version: 3;
+	version: 4;
 	projectKey: string;
 	inputHash: string;
 	fingerprints: { pipeline: string; schema: string; prompt: string; model: string };
@@ -60,6 +63,10 @@ interface ExtractionManifest {
 
 function manifestPath(workflowsRoot: string, projectKey: string): string {
 	return join(workflowsRoot, "manifests", `${projectKey}.json`);
+}
+
+function memoryTaskDirOf(journalsRoot: string, projectKey: string, taskId: string): string {
+	return join(journalsRoot, projectKey, taskId, "memory");
 }
 
 function sourceRefKey(taskId: string, recordSeq: number): string {
@@ -86,33 +93,58 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 		catalogPhaseSkipped: null,
 	};
 
-	// ---- 1. Load all memory records for the project (sole input) ----
+	// ---- 1. Load memory records for the project (sole input) ----
+	// Consumption gate: only tasks whose memory log is fully covered qualify.
+	// Uncovered (in-progress or un-distilled) tasks are skipped so extraction
+	// never builds workflows from a half-baked memory record.
 	const taskDirs = listTasks(opts.journalsRoot, opts.projectKey);
 	report.tasksScanned = taskDirs.length;
 	const memoryRecords: Array<{ taskId: string; seq: number }> = [];
-	// Each task repo lives under <journalsRoot>/<projectKey>/<taskId>; memory is
-	// read from the per-task memory dir.
+	let skippedUncovered = 0;
 	for (const dir of taskDirs) {
 		const meta = readTask(dir).meta;
 		if (!meta) continue;
 		const taskId = meta.taskId;
+		const cov = readTaskCoverage(memoryTaskDirOf(opts.journalsRoot, opts.projectKey, taskId));
+		const journalMaxSeq = readTask(dir).turns.reduce((max, t) => Math.max(max, t.seq), 0);
+		if (!opts.allowPartial && (!cov || !isFullyCovered(cov, journalMaxSeq))) {
+			skippedUncovered++;
+			continue;
+		}
 		const log = readTaskMemory(opts.journalsRoot, opts.projectKey, taskId);
 		for (const record of log.records) memoryRecords.push({ taskId, seq: record.seq });
 	}
 	report.memoryRecords = memoryRecords.length;
-	// -- minimal guard: no memory log to extract from
-	if (report.memoryRecords === 0) {
-		report.catalogPhaseSkipped = "no-memory-log";
+	if (memoryRecords.length === 0) {
+		report.catalogPhaseSkipped = skippedUncovered > 0 ? "no-fully-covered-tasks" : "no-memory-log";
 		return report;
 	}
 
-	// ---- 2. Watermark dedup: identical input + fingerprints skip re-run ----
+	// ---- 2. Watermark dedup: coverage + segments fingerprint skip re-run ----
 	const modelFingerprint = "session-model";
 	const promptFingerprint = createHash("sha256").update(SYNTHESIZE_SYSTEM_PROMPT).digest("hex");
+	// Include coverage (per task) so a distilled-again task reopens extraction.
+	const covFingerprint = createHash("sha256")
+		.update(
+			JSON.stringify(
+				taskDirs
+					.map((dir) => {
+						const meta = readTask(dir).meta;
+						if (!meta) return null;
+						const cov = readTaskCoverage(memoryTaskDirOf(opts.journalsRoot, opts.projectKey, meta.taskId));
+						return cov ? { taskId: meta.taskId, distilledUpTo: cov.distilledUpTo, stale: cov.stale } : null;
+					})
+					.filter((x): x is { taskId: string; distilledUpTo: number; stale: boolean } => x !== null)
+					.sort((a, b) => a.taskId.localeCompare(b.taskId)),
+			),
+		)
+		.digest("hex");
 	const inputHash = createHash("sha256").update(JSON.stringify(memoryRecords.sort((a, b) => sourceRefKey(a.taskId, a.seq).localeCompare(sourceRefKey(b.taskId, b.seq))))).digest("hex");
-	const manifest: ExtractionManifest = { version: 3, projectKey: opts.projectKey, inputHash, fingerprints: { pipeline: EXTRACTION_PIPELINE_VERSION, schema: EXTRACTION_SCHEMA_VERSION, prompt: promptFingerprint, model: modelFingerprint }, completedAt: "" };
+	const manifest: ExtractionManifest = { version: 4, projectKey: opts.projectKey, inputHash, fingerprints: { pipeline: EXTRACTION_PIPELINE_VERSION, schema: EXTRACTION_SCHEMA_VERSION, prompt: promptFingerprint, model: modelFingerprint }, completedAt: "" };
+	// Input signature = records + coverage (used for the watermark).
+	const inputSignatureKey = createHash("sha256").update(inputHash + "::" + covFingerprint).digest("hex");
 	const previous = readManifest(opts.store.root, opts.projectKey);
-	if (!opts.dryRun && previous && previous.inputHash === manifest.inputHash && JSON.stringify(previous.fingerprints) === JSON.stringify(manifest.fingerprints)) {
+	if (!opts.dryRun && previous && previous.inputHash === inputSignatureKey && JSON.stringify(previous.fingerprints) === JSON.stringify(manifest.fingerprints)) {
 		report.catalogPhaseSkipped = "watermark-unchanged";
 		return report;
 	}
@@ -122,13 +154,17 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 	for (const dir of taskDirs) {
 		const meta = readTask(dir).meta;
 		if (!meta) continue;
+		const cov = readTaskCoverage(memoryTaskDirOf(opts.journalsRoot, opts.projectKey, meta.taskId));
+		const journalMaxSeq = readTask(dir).turns.reduce((max, t) => Math.max(max, t.seq), 0);
+		if (!opts.allowPartial && (!cov || !isFullyCovered(cov, journalMaxSeq))) continue;
 		fullRecords.push(...readTaskMemory(opts.journalsRoot, opts.projectKey, meta.taskId).records);
 	}
 	if (fullRecords.length === 0) {
 		report.catalogPhaseSkipped = "no-memory-records";
 		return report;
 	}
-	const synthesis = await synthesizeLibrary(fullRecords, opts.llm);
+	const existingFeatures = opts.store.getCatalogFeatures().map((f) => ({ id: f.id, label: f.label, aliases: f.aliases }));
+	const synthesis = await synthesizeLibrary(fullRecords, opts.llm, existingFeatures);
 	if (!synthesis) {
 		report.catalogPhaseSkipped = "synthesis-failed";
 		return report;
@@ -153,8 +189,10 @@ export async function runExtraction(opts: ExtractOptions): Promise<ExtractReport
 		persistCodeAssets(opts.store, synthesis, report);
 		// assign entry ids to features
 		assignCatalogEntries(opts.store, synthesis, report);
+		// de-fragment: merge features that clearly overlap (shared alias token)
+		mergeOverlappingFeatures(opts.store);
 
-		writeManifest(opts.store.root, { ...manifest, completedAt: new Date().toISOString() });
+		writeManifest(opts.store.root, { ...manifest, inputHash: inputSignatureKey, completedAt: new Date().toISOString() });
 	} else {
 		// report-only accounting for dry-run
 		await persistWorkflows(opts.store, synthesis, sourceRefs, report, opts.projectKey, true);
@@ -234,12 +272,40 @@ function assignCatalogEntries(store: WorkflowStore, synthesis: SynthesisResult, 
 	}
 }
 
+/**
+ * De-fragmentation: merge features that clearly overlap — they share at least
+ * one non-trivial alias token. Deterministic, LLM-free; gives features an
+ * evolution path (they currently have no probation lifecycle).
+ */
+function mergeOverlappingFeatures(store: WorkflowStore): void {
+	const features = store.getCatalogFeatures();
+	const tokenOf = (f: typeof features[number]): Set<string> =>
+		new Set(
+			[f.label, ...f.aliases]
+				.flatMap((s) => s.toLowerCase().split(/[\s\-_/+]+/))
+				.filter((t) => t.length >= 2),
+		);
+	for (let i = 0; i < features.length; i++) {
+		const a = features[i];
+		if (!store.getCatalogFeatures().some((f) => f.id === a.id)) continue; // already merged away
+		const tokensA = tokenOf(a);
+		for (let j = i + 1; j < features.length; j++) {
+			const b = features[j];
+			if (!store.getCatalogFeatures().some((f) => f.id === b.id)) continue;
+			const tokensB = tokenOf(b);
+			let shared = 0;
+			for (const t of tokensA) if (tokensB.has(t)) shared++;
+			if (shared >= 1) store.mergeCatalogFeatures(b.id, a.id);
+		}
+	}
+}
+
 function readManifest(workflowsRoot: string, projectKey: string): ExtractionManifest | null {
 	const path = manifestPath(workflowsRoot, projectKey);
 	if (!existsSync(path)) return null;
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as ExtractionManifest;
-		return parsed.version === 3 && typeof parsed.inputHash === "string" && !!parsed.fingerprints ? parsed : null;
+		return parsed.version === 4 && typeof parsed.inputHash === "string" && !!parsed.fingerprints ? parsed : null;
 	} catch {
 		return null;
 	}

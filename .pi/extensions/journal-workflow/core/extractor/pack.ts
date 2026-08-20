@@ -31,6 +31,7 @@ Rules:
 - Base everything ONLY on tools/facts present in the input memory log; never invent steps, tools, or code.
 - Learn from what worked: include useful operations. Drop calls that are failed-without-information or did not advance the task (significance "wasted"/"neutral"), but DO keep a failed call when the memory log shows a learned recovery or a useful negative result.
 - Assign each L3/L2/L1 to one functional feature. A single task can contribute different levels to DIFFERENT features. Prefer generic, reusable workflows over task-specific ones.
+- ALIGN WITH EXISTING features first: the input includes "existingFeatures". Reuse an existing feature id (match by id, label, or aliases) whenever a workflow fits one already present. Only create NEW features for workflows that do NOT fit any existing feature. Reusing existing ids keeps the catalog from fragmenting.
 - Naming: L2 id = "l2-<kebab>", L1 = "l1-<kebab>", L3 WorkStrategy id = "ws-<kebab>"; keep ids stable so re-extraction merges.
 - Code asset id = "asset-<kebab>";
 Output ONLY JSON:
@@ -74,9 +75,10 @@ export interface SynthesisResult {
 	workflows: SynthesizedWorkflow[];
 }
 
-export function buildMemoryPayload(records: MemoryRecord[]): string {
+export function buildMemoryPayload(records: MemoryRecord[], existingFeatures: Array<{ id: string; label: string; aliases: string[] }> = []): string {
 	return JSON.stringify(
 		{
+			existingFeatures,
 			memoryRecords: records.map((record) => ({
 				seq: record.seq,
 				span: [record.spanFromTurnSeq, record.spanToTurnSeq],
@@ -222,12 +224,16 @@ function exportWorkStrategySteps(steps: unknown): WorkStrategy["steps"] {
 	return out;
 }
 
-export async function synthesizeLibrary(records: MemoryRecord[], llm: LlmClient): Promise<SynthesisResult | null> {
+export async function synthesizeLibrary(
+	records: MemoryRecord[],
+	llm: LlmClient,
+	existingFeatures: Array<{ id: string; label: string; aliases: string[] }> = [],
+): Promise<SynthesisResult | null> {
 	if (records.length === 0) return null;
 	try {
 		const text = await llm.complete({
 			systemPrompt: SYNTHESIZE_SYSTEM_PROMPT,
-			userPayload: buildMemoryPayload(records),
+			userPayload: buildMemoryPayload(records, existingFeatures),
 			maxTokens: 5000,
 		});
 		return parseSynthesis(text);

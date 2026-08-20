@@ -8,7 +8,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import type { LlmClient } from "./core/llm.ts";
 import { textFromContent } from "./core/llm.ts";
 import { JournalWriter } from "./core/journal/writer.ts";
@@ -24,7 +24,9 @@ import { checkExpect } from "./core/engine/validator.ts";
 import { EngineTracker, type EngineAction } from "./core/engine/tracker.ts";
 import { registerWorkflowCommands, type CommandPi } from "./commands.ts";
 import { createExecutionIds, WorkflowTraceWriter } from "./core/trace.ts";
-import { memorizeSpan, readTaskMemory } from "./core/memory/index.ts";
+import { memorizeSpan } from "./core/memory/index.ts";
+import { MemoryWriter, memoryTaskDir, readCoverage } from "./core/memory/writer.ts";
+import type { MemoryReview } from "./core/memory/types.ts";
 import type { JournalWorkflowConfig } from "./config.ts";
 
 export interface WireDeps {
@@ -273,10 +275,17 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 				backup = null;
 
 				writer = new JournalWriter(deps.config.journalsRoot, key, header.id);
-				lastMemoryTurnSeq = readTaskMemory(deps.config.journalsRoot, key, header.id).records.reduce(
-					(max, record) => Math.max(max, record.spanToTurnSeq),
-					0,
-				);
+				// Re-bind: short-lived tasks and reopened tasks must re-cover from
+				// the current watermark. Mark stale so coverage is recomputed and
+				// old segments are not trusted as complete (they are never rewritten).
+				const covDir = memoryTaskDir(deps.config.journalsRoot, key, header.id);
+				const prevCoverage = readCoverage(covDir);
+				if (prevCoverage && (lastMemoryTurnSeq > 0 || prevCoverage.distilledUpTo > 0)) {
+					try {
+						new MemoryWriter(deps.config.journalsRoot, key, header.id).markStale();
+					} catch { /* best effort */ }
+				}
+				lastMemoryTurnSeq = prevCoverage?.distilledUpTo ?? 0;
 
 			if (deps.config.backupEnabled !== false) {
 				backup = new BackupWriter(deps.config.backupsRoot ?? join(deps.config.journalsRoot, ".backups"), key, header.id, header.id, {
@@ -553,11 +562,41 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 		pi.on("session_before_compact", (_event: unknown, ctxRaw: unknown) => {
 			currentCtx = ctxRaw as HandlerCtx;
 		if (deps.config.memoryOnCompact === false) { deps.afterEvent?.("session_before_compact"); return; }
+		distillGap("compact");
+		deps.afterEvent?.("session_before_compact");
+	});
+
+	/** Capture Pi's native compaction summary as comparison data for the twin-track era. */
+	const capturePiSummary = (summary: string, tokensBefore: number): void => {
 		const w = writer;
-		if (!w) { deps.afterEvent?.("session_before_compact"); return; }
-		const taskId = currentCtx.sessionManager?.getHeader?.()?.id;
-		const toSeq = w.currentTurnSeq ?? w.lastTurnSeq ?? lastMemoryTurnSeq;
-		if (!taskId || toSeq <= lastMemoryTurnSeq) { deps.afterEvent?.("session_before_compact"); return; }
+		if (!w) return;
+		try {
+			appendFileSync(
+				join(w.dir, "compactions.jl"),
+				`${JSON.stringify({ kind: "pi-summary", turnSeq: w.lastTurnSeq, summary, tokensBefore, capturedAt: new Date().toISOString() })}\n`,
+			);
+		} catch { /* best effort */ }
+	};
+
+	pi.on("session_compact", (event: unknown, ctxRaw: unknown) => {
+		currentCtx = ctxRaw as HandlerCtx;
+		const compactionEntry = (event as { compactionEntry?: { summary?: unknown; tokensBefore?: unknown } }).compactionEntry;
+		if (typeof compactionEntry?.summary === "string") {
+			capturePiSummary(compactionEntry.summary, typeof compactionEntry.tokensBefore === "number" ? compactionEntry.tokensBefore : 0);
+		}
+		deps.afterEvent?.("session_compact");
+	});
+
+	/** Distill the uncovered fact gap [lastMemoryTurnSeq+1, toSeq] into a memory segment. */
+	const distillGap = (trigger: "compact" | "shutdown" | "manual", review?: MemoryReview): void => {
+		if (deps.config.memoryOnCompact === false && trigger !== "manual") return;
+		const w = writer;
+		if (!w) return;
+		const taskId = currentCtx?.sessionManager?.getHeader?.()?.id;
+		if (!taskId) return;
+		// On shutdown, currentTurn may already be flushed, so use lastTurnSeq.
+		const toSeq = w.currentTurnSeq ?? w.lastTurnSeq;
+		if (!toSeq || toSeq <= lastMemoryTurnSeq) { if (trigger === "shutdown") lastMemoryTurnSeq = w.lastTurnSeq; return; }
 		const fromSeq = lastMemoryTurnSeq + 1;
 		lastMemoryTurnSeq = toSeq;
 		const tracked: Promise<void> = memorizeSpan(
@@ -573,18 +612,32 @@ export function wire(pi: ExtensionAPI, deps: WireDeps): WiredRuntime {
 			},
 			fromSeq,
 			toSeq,
+			trigger,
+			review,
 		)
 			.then(() => undefined)
 			.catch(() => undefined)
 			.finally(() => { pendingMemorizations.delete(tracked); });
 		pendingMemorizations.add(tracked);
-		deps.afterEvent?.("session_before_compact");
-	});
+	};
 
 		pi.on("session_shutdown", (event: { reason?: string; targetSessionFile?: string }, ctxRaw: unknown) => {
 			currentCtx = ctxRaw as HandlerCtx;
 			appendBackup("session_shutdown", { reason: event.reason ?? "quit", targetSessionFile: event.targetSessionFile });
 			writer?.handleEvent({ kind: "session_shutdown" });
+			// Always tail-distill uncovered facts + attach a whole-task review so
+			// short tasks (never compacted) still produce memory log.
+			if (deps.config.memoryOnCompact !== false) {
+				const flushed = writer?.flushedTurn;
+				const outcome: MemoryReview["outcome"] = flushed?.outcome === "completed" ? "succeeded" : flushed?.outcome === "failed" ? "failed" : flushed?.outcome === "aborted" ? "aborted" : "partial";
+				const review: MemoryReview = {
+					outcome,
+					outcomeEvidence: flushed ? [flushed.seq] : [],
+					userSignal: null,
+					pendingItems: flushed?.unfinished ?? [],
+				};
+				distillGap("shutdown", review);
+			}
 			backup = null;
 
 		deps.afterEvent?.("session_shutdown");

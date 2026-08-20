@@ -29,12 +29,36 @@ Pi 生命周期事件
 - **工具调用：完整、忠实、按真实时间顺序**，成功和失败都保留；
 - **工具结果：只总结**——成功记录"得到了什么"，失败分析"为什么失败"；
 - 用户输入 / LLM 思考 / 输出：LLM 提炼；
-- 被截断字段保留备份 fragment ID，需要时可回取完整原文。
+- 被截断字段保留备份 fragment ID，需要时可回取完整原文；
+- **骨架是数据不是文本**：工具序列是结构化字段，可由程序校验（幻觉调用、漏报、状态翻转均可检出）。
 
-因为底层事实日志和备份始终在，压缩清除上文不会丢失信息。记忆日志 append-only 存储于
-`<journalsRoot>/<project-key>/<task-id>/memory/`，由 `session_before_compact` 事件触发生成。
+因为底层事实日志和备份始终在，压缩清除上文不会丢失信息。记忆日志是**分段覆盖的日志流**，append-only 存储于
+`<journalsRoot>/<project-key>/<task-id>/memory/`：
+
+```text
+coverage.json   # 覆盖水位：distilledUpTo、stale、segments 索引
+seg-<NNN>.json  # 蒸馏段（JSONL append-only）
+```
+
+**触发与覆盖水位**（统一机制，消除短任务采样偏差）：
+- `session_before_compact` → 蒸馏至当前 seq（compact 段）；
+- `session_shutdown` → 补齐剩余 gap（新增，一等路径）+ 追加整任务 review（outcome）；
+- 短任务（从不压缩）在 shutdown 时一次性全量蒸馏，不再被漏掉；
+- task 重开 → 旧段不重写，coverage 标 `stale`，下次触发增量续蒸。
+- 不变式：`distilledUpTo >= journal maxSeq 且 !stale` → 覆盖完整。
+
+骨架程序化校验由 `/wf-skeleton <task-id>` 查看，覆盖状态由 `/wf-cover` 查看。
 
 完整事件可以另外保存到受限备份。备份只包含扩展实际收到的内容；provider 没有返回或已经 redacted 的隐藏推理无法恢复。敏感 thinking/reasoning 默认不会提供给辅助提炼模型。
+
+#### Schema 三层
+每个记忆记录是三层规范：
+- `meta`：span（fromSeq/toSeq）、trigger（compact/shutdown/manual）；
+- `skeleton`：结构化工具调用序列（完整忠实、程序可校验、可渲染）；
+- `narrative`：用户意图、思考、长期记忆（强调解释性字段）；
+- `review`：仅 shutdown 触发——整任务 outcome + outcomeEvidence + pendingItems（self-assessed，`verifiedOutcome` 的未来挂载点）。
+
+Pi 原生压缩摘要会作为对照数据（`compactions.jl`）按 turn seq 锚定捕获，供将来合并双轨总结系统时对照评估。
 
 ### 工作流粒度
 
@@ -43,7 +67,7 @@ L1/L2/L3 是执行粒度，不是功能分类：
 ```text
 L1 模板      细粒度、通用的最小工具组合
 L2 工作流    中等粒度、带检查点、重试、备选和 escape 的专用流程
-L3 编排      粗粒度、多阶段任务骨架；当前主要是 advisory skeleton
+L3 方案      完整任务的解题思路 + 注意事项（advisory，不执行）
 ```
 
 当前实际支持程度：
@@ -281,20 +305,26 @@ commands.ts            /wf-* 命令
 
 - append-only 事实日志与受控 patch；
 - head-tail 截断、fragment 索引和受限按需补片；
-- **记忆日志**：上下文压缩时从事实日志+备份切片刻量提炼，工具成败都忠实、结果只总结；
+- **记忆日志（分段覆盖日志流）**：coverage.json 水位 + seg-*.json，压缩/结束统一为"蒸馏至某 seq"；短任务在 shutdown 补齐，消除采样偏差；task 重开标 stale 不重写旧段；
+- **Schema 三层**：meta（span/trigger）+ skeleton（结构化工具序列，程序可校验）+ narrative（意图/思考/记忆）；
+- **review 段**：shutdown 触发，记录整任务 outcome + outcomeEvidence + pendingItems（self-assessed）；
+- **Pi 原生压缩摘要**按 turn seq 锚定捕获（compactions.jl）作对照数据；
+- **骨架程序化校验**：`/wf-skeleton` 检出幻觉调用/漏报/状态翻转；`/wf-cover` 查看覆盖水位；
 - **按功能存储**：工作流按 feature 目录存放，命名带 `l<level>-`，渐进披露目录；
+- **分类抗漂移**：提取时把已有 catalog（含 aliases）放入上下文要求先对齐再新建；`mergeCatalogFeatures` 做确定性去碎片化；
 - **L3 WorkStrategy**：完整任务方案独立存于 `workstrategies/`，解题思路 + 注意事项 + 引用 L2/L1，advisory；
 - **可复用代码资产**：提取时把模型写过的独立脚本存为 `code-assets/`（含真脚本文件），工作流步骤用 `run_code` 引用；
 - **LLM 单次提取** L1/L2/L3 并跨功能分类（输入仅记忆日志）；
 - L1/L2 匹配、L2 checkpoint/retry/alternative/escape；
 - task 级 tracker snapshot 恢复；
-- 同输入 extraction watermark（version 3）。
+- 提取 watermark（version 4）：输入 = 记忆记录 + coverage 状态指纹，只消费覆盖完整的任务。
 
 ### 部分可用
 
 - backup 可记录和读取 fragment，但没有用户 restore/replay；
-- `/wf-extract` 依赖记忆日志已生成（上下文压缩后才提炼），目录/registry 多文件写入仍非事务；
+- `/wf-extract` 只消费 coverage 完整的任务（半覆盖任务默认跳过，需显式接受）；目录/registry 多文件写入仍非事务；
 - 代码资产目前由 `run_code` 引用并由模型执行；尚无独立的真 `run_code` 工具执行器（按设计靠模型执行）；
+- review 为 self-assessed，尚未有用户确认机制；
 - 跨插件可以并行工作，但没有自动执行结果关联。
 
 ### 后续优先级
@@ -303,5 +333,6 @@ commands.ts            /wf-* 命令
 2. extraction phase checkpoint、增量证据 key 和 registry/catalog 事务提交；
 3. exploration selection 与正式 journal/验证结果的关联协议；
 4. 独立 `auxModel` 模型解析、并发锁和 retention/清理策略；
-5. 记忆日志与 work 结果自动回写 `verifiedOutcome`；
-6. 代码资产的跨任务复用校验与清理策略。
+5. 记忆日志与 work 结果自动回写 `verifiedOutcome`（review 从 self-assessed 升级为 user-confirmed）；
+6. 代码资产的跨任务复用校验与清理策略；
+7. 用对照数据评估并合并 Pi 原生压缩与自研总结。

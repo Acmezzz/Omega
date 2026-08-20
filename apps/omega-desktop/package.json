@@ -1,0 +1,17 @@
+{
+  "name": "@omega/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "sdk-check": "node scripts/sdk-check.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2"
+  },
+  "devDependencies": {
+    "electron": "43.4.1"
+  }
+}

@@ -34,12 +34,24 @@ export interface MemoryTool {
 	significance: "essential" | "helpful" | "neutral" | "wasted" | null;
 }
 
+/** Outcome assessed once at task end (shutdown-triggered review). Self-assessed, not user-confirmed. */
+export interface MemoryReview {
+	outcome: "succeeded" | "partial" | "failed" | "aborted";
+	/** Fact turn seqs that evidence the outcome. */
+	outcomeEvidence: number[];
+	/** Explicit user feedback if captured (e.g. a final user message); else null. */
+	userSignal: string | null;
+	pendingItems: string[];
+}
+
 export interface MemoryRecord {
 	seq: number;
 	/** Fact turn range this memory span covers. */
 	spanFromTurnSeq: number;
 	spanToTurnSeq: number;
 	generatedAt: string;
+	/** Which trigger produced this segment. */
+	trigger: "compact" | "shutdown" | "manual" | "resume";
 	/** Distilled from the user inputs across the span. */
 	userIntent: string;
 	/** Distilled from assistant thinking/output across the span. */
@@ -52,12 +64,14 @@ export interface MemoryRecord {
 	sourceTurns: number[];
 	/** Backup fragments consumed during generation (provenance). */
 	fragmentIds?: string[];
+	/** Present only on shutdown-triggered records: whole-task outcome. */
+	review?: MemoryReview;
 }
 
-/** A memory record before its seq/span/generatedAt are assigned by the writer. */
-export type MemoryRecordData = Omit<MemoryRecord, "seq" | "spanFromTurnSeq" | "spanToTurnSeq" | "generatedAt">;
+/** A memory record before its seq/span/generatedAt/trigger are assigned by the writer. */
+export type MemoryRecordData = Omit<MemoryRecord, "seq" | "spanFromTurnSeq" | "spanToTurnSeq" | "generatedAt" | "trigger">;
 
-/** What append() accepts: data plus an explicit span (generatedAt is stamped by the writer). */
+/** What append() accepts: data plus an explicit span (generatedAt + trigger stamped by the writer). */
 export type MemoryRecordDataWithSpan = MemoryRecordData & { spanFromTurnSeq: number; spanToTurnSeq: number };
 
 /** Read model merged across the append-only memory log. */

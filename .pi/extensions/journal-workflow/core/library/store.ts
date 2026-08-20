@@ -230,6 +230,32 @@ export class WorkflowStore {
 		return this.getCatalog();
 	}
 
+	/**
+	 * Merge `fromId` feature into `intoId`: move member entries, union aliases
+	 * and levelSemantics, then drop `fromId`. Returns false when either is missing
+	 * or they are equal. Registry entries keep their own featureId; this is a
+	 * catalog-level de-fragmentation pass.
+	 */
+	mergeCatalogFeatures(fromId: string, intoId: string): boolean {
+		if (fromId === intoId) return false;
+		const from = this.catalog.features.find((f) => f.id === fromId);
+		const into = this.catalog.features.find((f) => f.id === intoId);
+		if (!from || !into) return false;
+		into.aliases = [...new Set([...into.aliases, ...from.aliases])];
+		into.entryIds = [...new Set([...into.entryIds, ...from.entryIds])];
+		into.levelSemantics = into.levelSemantics || from.levelSemantics;
+		into.updatedAt = new Date().toISOString();
+		this.catalog.features = this.catalog.features.filter((f) => f.id !== fromId);
+		this.catalog.updatedAt = new Date().toISOString();
+		// Re-point registered entities to the surviving feature so files stay discoverable.
+		for (const entry of this.entries) {
+			if (entry.featureId === fromId) entry.featureId = intoId;
+		}
+		this.save();
+		this.saveCatalog();
+		return true;
+	}
+
 	getEntry(id: string): RegistryEntry | undefined {
 		return this.entries.find((e) => e.id === id);
 	}

@@ -6,9 +6,9 @@ import type { LlmClient } from "../llm.ts";
 import { join } from "node:path";
 import { readTask } from "../journal/writer.ts";
 import { BackupReader } from "../journal/backup.ts";
-import { MemoryWriter, readMemoryLog, memoryTaskDir } from "./writer.ts";
+import { MemoryWriter, readMemoryLog, memoryTaskDir, type MemoryTrigger } from "./writer.ts";
 import { memorizeTurn } from "./memorize.ts";
-import type { MemoryLog, MemoryRecord } from "./types.ts";
+import type { MemoryLog, MemoryRecord, MemoryReview } from "./types.ts";
 
 export interface MemorizeSpanOptions {
 	journalsRoot: string;
@@ -31,7 +31,13 @@ export function readTaskMemory(journalsRoot: string, projectKey: string, taskId:
  * Build + append a MemoryRecord for the fact turns [fromSeq, toSeq].
  * Returns the appended record, or null on failure / no new turns.
  */
-export async function memorizeSpan(opts: MemorizeSpanOptions, fromSeq: number, toSeq: number): Promise<MemoryRecord | null> {
+export async function memorizeSpan(
+	opts: MemorizeSpanOptions,
+	fromSeq: number,
+	toSeq: number,
+	trigger: MemoryTrigger = "compact",
+	review?: MemoryReview,
+): Promise<MemoryRecord | null> {
 	if (toSeq < fromSeq || (toSeq - fromSeq) > 400) return null;
 	const { meta, turns } = readTask(join(opts.journalsRoot, opts.projectKey, opts.taskId));
 	if (!meta) return null;
@@ -51,7 +57,7 @@ export async function memorizeSpan(opts: MemorizeSpanOptions, fromSeq: number, t
 	});
 	if (!data) return null;
 	const writer = new MemoryWriter(opts.journalsRoot, opts.projectKey, opts.taskId);
-	return writer.append({ ...data, spanFromTurnSeq: fromSeq, spanToTurnSeq: toSeq });
+	return writer.append({ ...data, ...(review ? { review } : {}), spanFromTurnSeq: fromSeq, spanToTurnSeq: toSeq }, trigger);
 }
 
-export type { MemoryLog, MemoryRecord };
+export type { MemoryLog, MemoryRecord, MemoryTrigger };

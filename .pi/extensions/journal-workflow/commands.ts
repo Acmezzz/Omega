@@ -13,6 +13,8 @@ import { BackupReader } from "./core/journal/backup.ts";
 import { buildRestorePlan } from "./core/journal/restore.ts";
 import { checkProjectHealth } from "./core/health.ts";
 import { summarizeTrace, WorkflowTraceWriter } from "./core/trace.ts";
+import { readMemoryLog, memoryTaskDir, readCoverage, isFullyCovered } from "./core/memory/writer.ts";
+import { auditSkeleton } from "./core/memory/validate.ts";
 import type { JournalWorkflowConfig } from "./config.ts";
 
 export interface CommandDeps {
@@ -204,6 +206,48 @@ export function registerWorkflowCommands(pi: CommandPi, deps: CommandDeps, notif
 				}
 			}
 			notify(`项目 ${projectKey}：任务 ${dirs.length}，回合 ${turns}（待提炼 ${pending}），跳出记录 ${failures}`);
+		},
+	});
+
+	pi.registerCommand("wf-cover", {
+		description: "查看各任务的记忆日志覆盖水位（coverage）",
+		handler: async (_args, ctx) => {
+			const projectKey = deps.resolveProjectKey(ctx.cwd);
+			const dirs = listTasks(deps.config.journalsRoot, projectKey);
+			if (dirs.length === 0) { notify("当前项目没有任务。"); return; }
+			const lines = dirs.map((dir) => {
+				const meta = readTask(dir).meta;
+				if (!meta) return null;
+				const cov = readCoverage(memoryTaskDir(deps.config.journalsRoot, projectKey, meta.taskId));
+				const maxSeq = readTask(dir).turns.reduce((max, t) => Math.max(max, t.seq), 0);
+				if (!cov) return `${meta.taskId}：无记忆日志（未蒸馏）`;
+				const covered = isFullyCovered(cov, maxSeq);
+				return `${meta.taskId}：distilledUpTo=${cov.distilledUpTo}/${maxSeq} stale=${cov.stale} 段=${cov.segments.length} → ${covered ? "已完整覆盖" : "覆盖不完整（提取将被跳过）"}`;
+			}).filter((l): l is string => l !== null);
+			notify(lines.join("\n"));
+		},
+	});
+
+	pi.registerCommand("wf-skeleton", {
+		description: "程序化校验任务记忆日志的骨架是否与事实一致（幻觉/漏报/状态翻转）",
+		handler: async (args, ctx) => {
+			const taskId = args.trim().split(/\s+/)[0];
+			if (!taskId) { notify("用法：/wf-skeleton <task-id>"); return; }
+			const projectKey = deps.resolveProjectKey(ctx.cwd);
+			const dir = taskDirOf(deps.config.journalsRoot, projectKey, taskId);
+			const { turns } = readTask(dir);
+			const log = readMemoryLog(memoryTaskDir(deps.config.journalsRoot, projectKey, taskId));
+			if (log.records.length === 0) { notify(`任务 ${taskId} 没有记忆日志。`); return; }
+			let hallucinated = 0;
+			let missing = 0;
+			let mismatches = 0;
+			for (const record of log.records) {
+				const audit = auditSkeleton(record, turns);
+				hallucinated += audit.hallucinated.length;
+				missing += audit.missing.length;
+				mismatches += audit.statusMismatches.length;
+			}
+			notify(`骨架校验 ${taskId}：记录 ${log.records.length}，幻觉调用 ${hallucinated}，漏报调用 ${missing}，状态翻转 ${mismatches}`);
 		},
 	});
 }
