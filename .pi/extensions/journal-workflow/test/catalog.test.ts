@@ -36,17 +36,37 @@ describe("synthesis parsing (cross-feature, three granularities)", () => {
 		expect(l2?.level).toBe(2);
 	});
 
-	it("drops workflows that reference an unknown feature and non-JSON input", () => {
-		const parsed = parseSynthesis(JSON.stringify({
-			features: [{ id: "feature-a", label: "A", description: "A", aliases: [] }],
-			workflows: [
-				{ id: "l1-known", featureId: "feature-a", level: 1, intent: "x", calls: [], variants: [] },
-				{ id: "l1-orphan", featureId: "feature-missing", level: 1, intent: "y", calls: [], variants: [] },
-			],
-		}));
-		expect(parsed!.workflows.map((w) => w.id)).toEqual(["l1-known"]);
-		expect(parseSynthesis("not-json")).toBeNull();
-	});
+		it("drops workflows that reference an unknown feature and non-JSON input", () => {
+			const parsed = parseSynthesis(JSON.stringify({
+				features: [{ id: "feature-a", label: "A", description: "A", aliases: [] }],
+				workflows: [
+					{ id: "l1-known", featureId: "feature-a", level: 1, intent: "x", calls: [], variants: [] },
+					{ id: "l1-orphan", featureId: "feature-missing", level: 1, intent: "y", calls: [], variants: [] },
+				],
+			}));
+			expect(parsed!.workflows.map((w) => w.id)).toEqual(["l1-known"]);
+			expect(parseSynthesis("not-json")).toBeNull();
+		});
+
+		it("rejects IDs that could escape workflow storage paths", () => {
+			const parsed = parseSynthesis(JSON.stringify({
+				features: [
+					{ id: "feature-safe", label: "Safe", description: "Safe", aliases: [] },
+					{ id: "feature-../outside", label: "Bad", description: "Bad", aliases: [] },
+				],
+				codeAssets: [
+					{ id: "asset-safe", code: "echo ok" },
+					{ id: "../outside", code: "echo bad" },
+				],
+				workflows: [
+					{ id: "l1-safe", featureId: "feature-safe", level: 1, intent: "safe", calls: [], variants: [] },
+					{ id: "../outside", featureId: "feature-safe", level: 1, intent: "bad", calls: [], variants: [] },
+				],
+			}));
+			expect(parsed?.features.map((feature) => feature.id)).toEqual(["feature-safe"]);
+			expect(parsed?.codeAssets.map((asset) => asset.id)).toEqual(["asset-safe"]);
+			expect(parsed?.workflows.map((workflow) => workflow.id)).toEqual(["l1-safe"]);
+		});
 });
 
 describe("functional catalog", () => {

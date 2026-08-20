@@ -2,16 +2,23 @@
   "name": "@omega/desktop",
   "version": "0.1.0",
   "private": true,
+  "description": "Secure local Electron desktop shell for Omega Agent",
+  "author": "Omega",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "sdk-check": "node scripts/sdk-check.mjs"
+    "typecheck": "node --check electron/main.js && node --check electron/agent-bridge.js && node --check electron/preload.js && node --check renderer.js",
+    "test": "node --test test/*.test.mjs",
+    "sdk-check": "node scripts/sdk-check.mjs",
+    "package:dir": "electron-builder --dir",
+    "package": "electron-builder"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2"
   },
   "devDependencies": {
-    "electron": "43.4.1"
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3"
   }
 }

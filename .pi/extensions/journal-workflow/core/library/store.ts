@@ -14,7 +14,7 @@
  * - probation && usage >= 8 && escapes * 2 > usage → deprecated
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
 	type LibraryEntity,
 	type L1Template,
@@ -48,6 +48,20 @@ export interface EvidenceRecord {
 interface EvidenceLedgerFile { version: 1; entries: EvidenceRecord[] }
 
 const EMPTY_CATALOG: CatalogFile = { version: 1, updatedAt: "", features: [] };
+const SAFE_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+function safeId(value: string, label: string): string {
+	if (!SAFE_ID.test(value)) throw new Error(`invalid ${label}`);
+	return value;
+}
+
+function containedPath(root: string, candidate: string): string {
+	const base = resolve(root);
+	const target = resolve(candidate);
+	const rel = relative(base, target);
+	if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("path escapes workflow root");
+	return target;
+}
 
 function readCatalog(rootDir: string): CatalogFile {
 	const path = join(rootDir, "catalog.json");
@@ -118,22 +132,26 @@ export class WorkflowStore {
 
 	/** Upsert a code asset (index json + true script file written to disk). */
 	upsertCodeAsset(asset: Omit<CodeAsset, "createdAt" | "sources"> & { sources?: CodeAsset["sources"] }): CodeAsset {
+		const assetId = safeId(asset.id, "code asset id");
 		const dir = this.codeAssetsDir();
 		mkdirSync(dir, { recursive: true });
 		const full: CodeAsset = {
 			...asset,
+			id: assetId,
 			createdAt: new Date().toISOString(),
 			sources: asset.sources ?? [],
 		};
-		writeFileSync(join(dir, `${asset.id}.json`), `${JSON.stringify(full, null, "\t")}\n`);
+		writeFileSync(containedPath(this.rootDir, join(dir, `${assetId}.json`)), `${JSON.stringify(full, null, "\t")}\n`);
 		// True script file on disk so a model can reference the path and run it.
 		const ext = /^[a-z0-9]+$/.test(asset.language) ? asset.language : "txt";
-		writeFileSync(join(dir, `${asset.id}.${ext}`), asset.code);
+		writeFileSync(containedPath(this.rootDir, join(dir, `${assetId}.${ext}`)), asset.code);
 		return full;
 	}
 
 	getCodeAsset(id: string): CodeAsset | undefined {
-		const path = join(this.codeAssetsDir(), `${id}.json`);
+		let safeAssetId: string;
+		try { safeAssetId = safeId(id, "code asset id"); } catch { return undefined; }
+		const path = containedPath(this.rootDir, join(this.codeAssetsDir(), `${safeAssetId}.json`));
 		if (!existsSync(path)) return undefined;
 		try {
 			return JSON.parse(readFileSync(path, "utf-8")) as CodeAsset;
@@ -159,8 +177,9 @@ export class WorkflowStore {
 
 	/** Disk path of a code asset's script file (existence not guaranteed by caller). */
 	codeAssetScriptPath(id: string, language: string): string {
+		const safeAssetId = safeId(id, "code asset id");
 		const ext = /^[a-z0-9]+$/.test(language) ? language : "txt";
-		return join(this.codeAssetsDir(), `${id}.${ext}`);
+		return containedPath(this.rootDir, join(this.codeAssetsDir(), `${safeAssetId}.${ext}`));
 	}
 
 	get root(): string { return this.rootDir; }
@@ -429,17 +448,21 @@ export class WorkflowStore {
 	}
 
 	private entityPath(featureId: string, level: 1 | 2 | 3, id: string): string {
+		const safeFeatureId = safeId(featureId, "feature id");
+		const safeEntityId = safeId(id, "entity id");
 		// Entity ids are already l<level>-prefixed; ids for workstrategies are
 		// ws-<slug>-prefixed. L1/L2 live in the feature dir (grouped by function);
 		// L3 WorkStrategies are stored independently in workstrategies/ while
 		// remaining indexed by the functional catalog via featureId.
-		if (level === 3) return join(this.rootDir, "workstrategies", `${id}.json`);
-		return join(this.rootDir, "features", featureId, `${id}.json`);
+		const target = level === 3
+			? join(this.rootDir, "workstrategies", `${safeEntityId}.json`)
+			: join(this.rootDir, "features", safeFeatureId, `${safeEntityId}.json`);
+		return containedPath(this.rootDir, target);
 	}
 
 	private writeEntity(entity: LibraryEntity, featureId: string, level: 1 | 2 | 3): void {
-		const dir = level === 3 ? join(this.rootDir, "workstrategies") : join(this.rootDir, "features", featureId);
-		mkdirSync(dir, { recursive: true });
+		const dir = level === 3 ? join(this.rootDir, "workstrategies") : join(this.rootDir, "features", safeId(featureId, "feature id"));
+		mkdirSync(containedPath(this.rootDir, dir), { recursive: true });
 		writeFileSync(this.entityPath(featureId, level, entity.id), `${JSON.stringify(entity, null, "\t")}\n`);
 	}
 

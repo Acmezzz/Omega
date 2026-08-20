@@ -63,10 +63,13 @@ console.log("[sdk-check] loaded extensions:", extNames.length ? extNames.join(",
 			}
 		});
 		await session.prompt("Reply with exactly: ok");
-		console.log(`[sdk-check] prompt round-trip streamed text: ${gotDelta ? "YES" : "NO (may be no model configured)"}`);
-	} catch (err) {
-		console.log("[sdk-check] prompt round-trip skipped:", err?.message ?? String(err));
-	}
+		console.log(`[sdk-check] prompt round-trip streamed text: ${gotDelta ? "YES" : "NO"}`);
+			if (!gotDelta) throw new Error("prompt round-trip produced no text_delta");
+		} catch (err) {
+			console.error("[sdk-check] prompt round-trip failed:", err?.message ?? String(err));
+			throw err;
+		}
+
 
 	// Proof the plugins actually WIRED (not merely loaded): journal-workflow writes
 	// to <agentDir>/journals on session events. Check it has content after the run.
@@ -81,7 +84,8 @@ console.log("[sdk-check] loaded extensions:", extNames.length ? extNames.join(",
 		}
 	} catch { /* no journals dir yet */ }
 	console.log(`[sdk-check] journal-workflow WIRED (journals written): ${journalWrote ? "YES" : "NO"}`);
-
+	if (!hasJournal || !hasScout || errors.length > 0 || !journalWrote) throw new Error("SDK smoke assertions failed");
+	session.dispose();
 	process.exit(0);
 }
 

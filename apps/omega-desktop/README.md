@@ -24,7 +24,9 @@ apps/omega-desktop/
     agent-bridge.js     # 主进程内创建 agent session + 加载插件
   index.html            # 渲染进程消息列表
   renderer.js           # 订阅 agent 事件并渲染
-  scripts/sdk-check.mjs # 纯 Node 冒烟：验证 SDK + 插件加载 + 回环
+  styles.css             # 深色桌面 UI tokens 和组件样式
+  scripts/sdk-check.mjs  # 纯 Node 冒烟：验证 SDK + 插件加载 + 回环
+  test/                  # Electron 边界和 Renderer 静态回归测试
 ```
 
 ## 运行（在 monorepo 根先装依赖，再在 apps/omega-desktop 运行）
@@ -40,5 +42,8 @@ npm run sdk-check       # 纯 Node 冒烟（无 GUI），证明本地 workspace 
 ## 注意
 
 - 若本地 `packages/coding-agent` 代码有改动，需先 `npm run build` 刷新 `dist/`，omega-desktop 用的是 build 产物。
-- 渲染进程当前是**自写的极简事件流**验证；接入 `@earendil-works/pi-web-ui` 的 `ChatPanel`（含工具/附件/artifacts UI）是下一阶段。
-- 扩展路径硬编码指向 monorepo 根的 `.pi/extensions`（`agent-bridge.js` 的 `OMEGA_EXT`）。
+- 渲染进程现在使用本地安全 DTO、消息聚合、工具卡片和只读事件展示；不把 thinking、原始工具参数/结果或 restricted fragment 暴露给 Renderer。
+- workspace 根 `package-lock.json` 是唯一依赖锁文件；旧的 app 独立 lockfile 已移除。
+- 开发环境从 monorepo 加载 `.pi/extensions`；打包环境从 `extraResources/omega-runtime/.pi/extensions` 加载。可用 `OMEGA_EXTENSIONS_ROOT` 覆盖扩展目录，`OMEGA_WORKSPACE` 指定工作区。
+- `npm run typecheck` 和 `npm test` 是桌面基础门禁；`npm run package:dir` 使用 electron-builder 生成 unpacked 目录。首次打包需要可访问 Electron 构建缓存或配置企业/国内镜像，当前环境证书失败时不会伪装为成功。
+- 当前不支持 Markdown/HTML 原样渲染；消息使用纯文本 DOM 更新，避免模型输出形成 HTML。

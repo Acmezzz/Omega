@@ -107,12 +107,13 @@ export function parseSynthesis(text: string): SynthesisResult | null {
 	const parsed = parseJsonLoose(text);
 	if (!parsed || typeof parsed !== "object") return null;
 	const obj = parsed as Record<string, unknown>;
+	const safeId = (value: unknown, prefix?: string): value is string => typeof value === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) && (!prefix || value.startsWith(`${prefix}-`));
 	const features = Array.isArray(obj.features)
 		? (obj.features as unknown[])
 			.map((item): SynthesizeFeature | null => {
 				if (!item || typeof item !== "object") return null;
 				const f = item as Record<string, unknown>;
-				if (typeof f.id !== "string" || typeof f.label !== "string" || typeof f.description !== "string") return null;
+				if (!safeId(f.id, "feature") || typeof f.label !== "string" || typeof f.description !== "string") return null;
 				return {
 					id: f.id,
 					label: f.label,
@@ -128,7 +129,7 @@ export function parseSynthesis(text: string): SynthesisResult | null {
 	const featureIds = new Set(features.map((f) => f.id));
 	for (const w of workflowsRaw) {
 		if (!w || typeof w !== "object") continue;
-		if (typeof w.id !== "string" || typeof w.featureId !== "string" || typeof w.intent !== "string") continue;
+		if (!safeId(w.id) || !safeId(w.featureId, "feature") || typeof w.intent !== "string") continue;
 		if (!featureIds.has(w.featureId)) continue; // workflow must belong to a known feature
 		const level = typeof w.level === "number" ? w.level : inferLevel(w.id);
 		const excludes = Array.isArray(w.excludes) ? w.excludes.filter((x): x is string => typeof x === "string") : undefined;
@@ -158,7 +159,7 @@ export function parseSynthesis(text: string): SynthesisResult | null {
 			.map((item): SynthesizedCodeAsset | null => {
 				if (!item || typeof item !== "object") return null;
 				const a = item as Record<string, unknown>;
-				if (typeof a.id !== "string" || typeof a.code !== "string") return null;
+				if (!safeId(a.id, "asset") || typeof a.code !== "string") return null;
 				return {
 					id: a.id,
 					name: typeof a.name === "string" ? a.name : a.id,
