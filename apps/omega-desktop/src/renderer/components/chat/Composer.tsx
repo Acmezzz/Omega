@@ -22,9 +22,28 @@ export function Composer(): React.ReactElement {
     setText("");
     setConnection("running");
     try {
-      await ipc.prompt(value);
+      const res = await ipc.prompt(value);
+      if (!res.ok) {
+        // The prompt never started (or failed outright) — give the text back
+        // and surface the reason instead of silently dropping the message.
+        setText(value);
+        useAppStore.getState().appendMessage({
+          role: "assistant",
+          id: `error-${Date.now()}`,
+          text: `⚠️ 发送失败（${res.code}）：${res.message ?? "未知错误"}`,
+          ts: new Date().toISOString(),
+        });
+        setConnection("error");
+      }
     } catch (error) {
-      console.error("prompt failed", error);
+      setText(value);
+      useAppStore.getState().appendMessage({
+        role: "assistant",
+        id: `error-${Date.now()}`,
+        text: `⚠️ 发送异常：${error instanceof Error ? error.message : String(error)}`,
+        ts: new Date().toISOString(),
+      });
+      setConnection("error");
     } finally {
       setBusy(false);
     }

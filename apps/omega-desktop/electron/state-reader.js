@@ -13,7 +13,7 @@
  * leak upstream types. See system_design.md §3.1 and the security red line.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, homedir } from "node:path";
+import { join } from "node:path";
 import { homedir as osHomedir } from "node:os";
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ function defaultAgentDir() {
 
 function resolveConfiguredPath(value, agentDir) {
   if (typeof value !== "string") return null;
-  const expanded = value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
+  const expanded = value.startsWith("~/") ? join(osHomedir(), value.slice(2)) : value;
   return expanded;
 }
 
@@ -186,11 +186,11 @@ export function readWorkflowRegistry(workflowsRoot) {
   };
 }
 
-export function readWorkflowTracker(journalsRoot, projectKey, taskId) {
+export function readWorkflowTracker(journalsRoot, projectKey, taskId, workflowsRoot) {
   if (!taskId) return undefined;
   const snap = readJson(join(journalsRoot, projectKey, taskId, "tracker.json"));
   if (!snap || snap.version !== 1 || typeof snap.workflowId !== "string") return undefined;
-  const registry = readWorkflowRegistry(join(journalsRoot, "..", "workflows"));
+  const registry = readWorkflowRegistry(workflowsRoot ?? join(journalsRoot, "..", "workflows"));
   const entry = registry.entries.find((e) => e.id === snap.workflowId);
   return {
     workflowId: snap.workflowId,
@@ -548,7 +548,7 @@ export function readExtensionState(opts = {}) {
   if (scope === "workflow" || scope === "all") {
     bundle.workflow_catalog = readWorkflowCatalog(roots.workflowsRoot);
     bundle.workflow_registry = readWorkflowRegistry(roots.workflowsRoot);
-    bundle.workflow_tracker = readWorkflowTracker(roots.journalsRoot, projectKey, taskId);
+    bundle.workflow_tracker = readWorkflowTracker(roots.journalsRoot, projectKey, taskId, roots.workflowsRoot);
     bundle.workflow_memory_coverage = readWorkflowMemoryCoverage(
       roots.journalsRoot,
       projectKey,

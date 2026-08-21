@@ -1,6 +1,6 @@
 /** Electron main process. Agent stays privileged here; renderer only receives safe DTOs. */
 import { app, BrowserWindow, ipcMain, session as electronSession } from "electron";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createSession, streamToRenderer } from "./agent-bridge.js";
@@ -19,6 +19,7 @@ let shuttingDown = false;
 let promptQueue = Promise.resolve();
 let activeCwd = null;
 let activeSessionId = null;
+let agentReady = false;
 
 function rootOf() {
   return app.isPackaged ? (process.resourcesPath ? join(process.resourcesPath, "omega-runtime") : app.getAppPath()) : DEV_ROOT;
@@ -74,7 +75,10 @@ async function switchWorkspace(workspace) {
   try { session?.dispose(); } catch (error) { process.stderr.write(`[main] dispose failed: ${String(error)}\n`); }
   session = undefined;
   session = await createSession({ cwd: workspace, extensionsRoot: extensionsRootOf() });
-  if (win && !win.isDestroyed()) unsubscribe = streamToRenderer(session, win.webContents);
+  if (win && !win.isDestroyed()) {
+    unsubscribe = streamToRenderer(session, win.webContents);
+    agentReady = true;
+  }
   activeCwd = workspace;
   process.stdout.write(`[main] switched workspace -> ${workspace}\n`);
 }
@@ -99,19 +103,38 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event, url) => { if (url !== expectedPageUrl()) event.preventDefault(); });
   electronSession.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  win.webContents.on("console-message", (_e, _level, message) => process.stdout.write(`[renderer] ${message}\n`));
+  win.webContents.on("console-message", (details) => {
+    process.stdout.write(`[renderer] [${details.level}] ${details.message}\n`);
+  });
   win.on("closed", () => { unsubscribe?.(); unsubscribe = undefined; win = undefined; });
   if (bootstrapError) {
     await win.loadFile(rendererPath());
     win.webContents.send("app:bootstrap-error", { message: bootstrapError.slice(0, 2_000) });
   } else {
     unsubscribe = streamToRenderer(session, win.webContents);
+    agentReady = true;
     await win.loadFile(rendererPath());
   }
   win.show();
   if (process.env.OMEGA_AUTOTEST === "1" && session) {
-    win.webContents.once("did-finish-load", () => { setTimeout(() => { void promptInternal("Reply with exactly: hello from omega-desktop"); }, 500); });
+    // loadFile above has already resolved, i.e. the page finished loading —
+    // waiting for another did-finish-load here would never fire.
     setTimeout(() => {
+      promptInternal("Reply with exactly: hello from omega-desktop")
+        .then(() => process.stdout.write("[main] autotest prompt: ok\n"))
+        .catch((error) => process.stdout.write(`[main] autotest prompt failed: ${error instanceof Error ? error.message : String(error)}\n`));
+    }, 500);
+    setTimeout(async () => {
+      const screenshotPath = process.env.OMEGA_SCREENSHOT;
+      if (screenshotPath && win && !win.isDestroyed()) {
+        try {
+          const image = await win.webContents.capturePage();
+          writeFileSync(screenshotPath, image.toPNG());
+          process.stdout.write(`[main] screenshot saved -> ${screenshotPath}\n`);
+        } catch (error) {
+          process.stdout.write(`[main] screenshot failed: ${String(error)}\n`);
+        }
+      }
       process.stdout.write("[main] autotest done, quitting\n");
       void shutdown().finally(() => app.quit());
     }, 25_000);
@@ -130,6 +153,11 @@ function promptInternal(text) {
 // ---------------------------------------------------------------------------
 // Agent prompt (legacy contract)
 // ---------------------------------------------------------------------------
+
+ipcMain.handle("omega:sessionReady", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  return okResult({ ready: agentReady });
+});
 
 ipcMain.handle("agent:prompt", async (event, text) => {
   if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");

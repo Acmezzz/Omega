@@ -16,6 +16,7 @@ export interface OmegaBridge {
   prompt(text: string): Promise<IpcResult<void>>;
   onStatus(callback: (data: unknown) => void): () => void;
   onEvent(callback: (data: unknown) => void): () => void;
+  sessionReady(): Promise<IpcResult<{ ready: boolean }>>;
   queryExtensionState(req: {
     scope?: "all" | "workflow" | "scout";
     projectKey?: string;
@@ -53,6 +54,8 @@ function ok<T>(value: IpcResult<T> | undefined): IpcResult<T> {
 
 export const ipc = {
   prompt: async (text: string): Promise<IpcResult<void>> => ok(await window.omega?.prompt?.(text)),
+  sessionReady: async (): Promise<IpcResult<{ ready: boolean }>> =>
+    ok(await window.omega?.sessionReady?.()),
   queryExtensionState: async (req: {
     scope?: "all" | "workflow" | "scout";
     projectKey?: string;

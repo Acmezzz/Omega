@@ -1,12 +1,17 @@
 /**
  * MUI theme provider wiring:
- *   StyledEngineProvider (use our emotion cache with the CSP nonce)
+ *   CacheProvider (our emotion cache with the CSP nonce AND prepend ordering)
  *   ThemeProvider (dark palette derived from design tokens)
  *   CssBaseline (normalize + apply the dark background)
+ *
+ * NOTE: do NOT wrap this tree in <StyledEngineProvider injectFirst>. It creates
+ * its own NON-nonced emotion cache (`createCache({ key: 'css' })`) and overrides
+ * ours via an inner CacheProvider, so every MUI <style> injection violates the
+ * index.html CSP (`style-src 'self' 'nonce-...'`). Our cache already sets both
+ * `prepend: true` and the shared nonce.
  */
 import * as React from "react";
 import { createTheme, ThemeProvider as MuiThemeProvider, CssBaseline } from "@mui/material";
-import { StyledEngineProvider } from "@mui/material/styles";
 import { CacheProvider } from "@emotion/react";
 import { emotionCache } from "./emotion-cache";
 import { colors, fontFamily } from "./tokens";
@@ -40,12 +45,10 @@ const theme = createTheme({
 export function ThemeProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
     <CacheProvider value={emotionCache}>
-      <StyledEngineProvider injectFirst>
-        <MuiThemeProvider theme={theme}>
-          <CssBaseline />
-          {children}
-        </MuiThemeProvider>
-      </StyledEngineProvider>
+      <MuiThemeProvider theme={theme}>
+        <CssBaseline />
+        {children}
+      </MuiThemeProvider>
     </CacheProvider>
   );
 }

@@ -79,6 +79,9 @@ export function App(): React.ReactElement {
             });
           }
           break;
+        case "session_start":
+          setConnection("ready");
+          break;
         case "agent_start":
         case "turn_start":
           setConnection("running");
@@ -109,6 +112,21 @@ export function App(): React.ReactElement {
 
     // Initial data loads.
     setConnection("connecting");
+    // Poll until the main process reports the agent session is live, so the
+    // connection chip settles on "ready" instead of staying on "connecting"
+    // when no agent events have arrived yet.
+    let cancelled = false;
+    void (async () => {
+      for (let attempt = 0; attempt < 40 && !cancelled; attempt += 1) {
+        const res = await ipc.sessionReady();
+        if (cancelled) return;
+        if (res.ok && res.data.ready) {
+          setConnection("ready");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    })();
     void ipc.listSessions().then((res) => {
       if (res.ok) setSessions(res.data);
     });
@@ -120,6 +138,7 @@ export function App(): React.ReactElement {
     })();
 
     return () => {
+      cancelled = true;
       offEvent();
       offStatus();
     };

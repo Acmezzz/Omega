@@ -35,7 +35,8 @@ export async function createSession({ cwd, extensionsRoot }) {
     settingsManager: SettingsManager.create(cwd, AGENT_DIR),
   });
   await resourceLoader.reload();
-  return createAgentSession({ cwd, agentDir: AGENT_DIR, resourceLoader, tools: ["read", "bash", "edit", "write"] });
+  const { session } = await createAgentSession({ cwd, agentDir: AGENT_DIR, resourceLoader, tools: ["read", "bash", "edit", "write"] });
+  return session;
 }
 
 function textValue(value) {

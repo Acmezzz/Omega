@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld("omega", {
   },
 
   // ----- extension state (read-only) -----
+  sessionReady: () => ipcRenderer.invoke("omega:sessionReady"),
   queryExtensionState: (req) => {
     const scope = typeof req?.scope === "string" ? req.scope : "all";
     if (!["all", "workflow", "scout"].includes(scope)) {
