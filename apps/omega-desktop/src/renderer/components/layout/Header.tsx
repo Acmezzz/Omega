@@ -17,6 +17,7 @@ import ExploreIcon from "@mui/icons-material/Explore";
 import StopIcon from "@mui/icons-material/Stop";
 import CompressIcon from "@mui/icons-material/Compress";
 import SettingsIcon from "@mui/icons-material/SettingsOutlined";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
@@ -26,6 +27,7 @@ import { ipc } from "../../ipc/client";
 import type { ThinkingLevel } from "../../types/dto";
 import type { ThemeMode } from "../../theme/palettes";
 import { SettingsDialog } from "./SettingsDialog";
+import { SessionInfoDialog } from "./SessionInfoDialog";
 import { ModelPicker } from "./ModelPicker";
 
 const CONNECTION_LABEL: Record<string, string> = {
@@ -86,6 +88,7 @@ export function Header(): React.ReactElement {
   const [thinkingAnchor, setThinkingAnchor] = React.useState<HTMLElement | null>(null);
   const [authAnchor, setAuthAnchor] = React.useState<HTMLElement | null>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [infoOpen, setInfoOpen] = React.useState(false);
   const [modelAnchor, setModelAnchor] = React.useState<HTMLElement | null>(null);
   const [busy, setBusy] = React.useState(false);
 
@@ -308,6 +311,13 @@ export function Header(): React.ReactElement {
             sx={{ cursor: "pointer", display: { xs: "none", sm: "inline-flex" } }}
           />
         </Tooltip>
+
+        <Tooltip title="会话信息 / 导出">
+          <IconButton size="small" onClick={() => setInfoOpen(true)} sx={{ color: "var(--omega-text-muted)" }}>
+            <InfoOutlinedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <SessionInfoDialog open={infoOpen} onClose={() => setInfoOpen(false)} />
 
         <Tooltip title="设置">
           <IconButton size="small" onClick={() => setSettingsOpen(true)} sx={{ color: "var(--omega-text-muted)" }}>

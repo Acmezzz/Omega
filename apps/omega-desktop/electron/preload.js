@@ -195,6 +195,14 @@ contextBridge.exposeInMainWorld("omega", {
     }
     return ipcRenderer.invoke("omega:gitCommit", { message: req.message.slice(0, 8000) });
   },
+  getThinking: (req) => {
+    if (!req || typeof req.entryId !== "string" || !req.entryId.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "entryId is required" });
+    }
+    return ipcRenderer.invoke("omega:getThinking", { entryId: req.entryId });
+  },
+  getSystemPrompt: () => ipcRenderer.invoke("omega:getSystemPrompt"),
+  exportHtml: () => ipcRenderer.invoke("omega:exportHtml"),
   queryExtensionState: (req) => {
     const scope = typeof req?.scope === "string" ? req.scope : "all";
     if (!["all", "workflow", "scout"].includes(scope)) {

@@ -378,13 +378,16 @@ export function sanitizeTranscript(messagesOrSession) {
     }
     if (message.role === "assistant") {
       const id = textValue(message.id) ?? `assistant-${outMessages.length}`;
+      const thinking = cap(thinkingFromContent(message.content));
       outMessages.push({
         role: "assistant",
         id,
         text: textFromContent(message.content),
         ts: messageTimestamp(message),
         entryId: entry.id,
-        thinking: cap(thinkingFromContent(message.content)),
+        // Deferred: the thinking text is NOT embedded in the transcript (long
+        // sessions stay light); the viewer fetches it per entry on demand.
+        ...(thinking ? { thinkingDeferred: true } : {}),
       });
       if (Array.isArray(message.content)) {
         for (const part of message.content) {
@@ -415,6 +418,13 @@ export function sanitizeTranscript(messagesOrSession) {
 
 function rememberSessionPath(id, filePath) {
   if (id && filePath) sessionPaths.set(id, filePath);
+}
+
+/** Fetch the thinking text of one entry (deferred thinking, on demand). */
+export function getThinking(runtime, entryId) {
+  const entry = runtime.session.sessionManager.getBranch().find((item) => item.id === entryId);
+  if (!entry || entry.type !== "message") return null;
+  return cap(thinkingFromContent(entry.message.content)) ?? null;
 }
 
 export async function resolveSessionPath(sessionId) {
@@ -517,6 +527,12 @@ export function snapshotOf(runtime) {
     followUpMode: session.followUpMode,
     autoCompaction: session.autoCompactionEnabled,
     autoRetry: Boolean(session.settingsManager?.getRetrySettings?.()?.enabled),
+    stats: {
+      userMessages: stats.userMessages ?? 0,
+      assistantMessages: stats.assistantMessages ?? 0,
+      toolCalls: stats.toolCalls ?? 0,
+      totalMessages: stats.totalMessages ?? 0,
+    },
     modelFallbackMessage: runtime.modelFallbackMessage ?? null,
     ...sanitizeTranscript(session),
   };

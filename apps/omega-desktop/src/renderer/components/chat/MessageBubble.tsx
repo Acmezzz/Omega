@@ -84,7 +84,7 @@ function MessageBubbleInner({ message, streamingRun }: MessageBubbleProps): Reac
   }, [message.entryId, forking, setActiveSession, loadTranscript, setAgent, setComposerPrefill]);
 
   const canFork = Boolean(isUser && message.entryId) && connection !== "running";
-  const showThinking = !isUser && !isError && Boolean(message.thinking);
+  const showThinking = !isUser && !isError && (Boolean(message.thinking) || message.thinkingDeferred);
   const isStreamingTarget = streamingRun;
 
   return (
@@ -132,7 +132,14 @@ function MessageBubbleInner({ message, streamingRun }: MessageBubbleProps): Reac
             ) : null}
           </Box>
         ) : null}
-        {showThinking ? <ThinkingBlock text={message.thinking ?? ""} streaming={isStreamingTarget} /> : null}
+        {showThinking ? (
+          <ThinkingBlock
+            text={message.thinking ?? ""}
+            streaming={isStreamingTarget && Boolean(message.thinking)}
+            deferred={message.thinkingDeferred}
+            entryId={message.entryId}
+          />
+        ) : null}
         <Box
           sx={{
             minWidth: 0,

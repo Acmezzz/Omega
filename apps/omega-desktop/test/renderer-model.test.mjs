@@ -189,7 +189,8 @@ test("sanitizeTranscript keeps thinking, entry ids, and tool payloads", () => {
   const { messages, toolCards } = sanitizeTranscript(fakeSession);
   assert.equal(messages[0].entryId, "entry-1");
   assert.equal(messages[1].entryId, "entry-2");
-  assert.equal(messages[1].thinking, "visible reasoning");
+  assert.equal(messages[1].thinkingDeferred, true);
+  assert.equal(messages[1].thinking, undefined);
   assert.equal(messages[1].text, "answer");
   assert.equal(toolCards[0].target, "/abs/secret/README.md");
   assert.match(toolCards[0].argsJson, /README\.md/);
@@ -351,4 +352,30 @@ test("left nav exposes the files tab and viewer", async () => {
   assert.match(viewer, /binary/);
   const markdown = await read("../src/renderer/components/common/Markdown.tsx");
   assert.match(markdown, /openViewer/);
+});
+
+test("R3: deferred thinking and stats/export IPC surfaces", async () => {
+  const bridge = await read("../electron/agent-bridge.js");
+  assert.match(bridge, /thinkingDeferred/);
+  assert.match(bridge, /export function getThinking/);
+  assert.match(bridge, /userMessages/);
+  const main = await read("../electron/main.js");
+  for (const channel of ["omega:getThinking", "omega:getSystemPrompt", "omega:exportHtml"]) {
+    assert.ok(main.includes(`ipcMain.handle("${channel}",`), `${channel} handler present`);
+  }
+  const exporter = await read("../electron/export-html.js");
+  assert.match(exporter, /buildSessionHtml/);
+});
+
+test("R3: thinking blocks defer loading and message list windows", async () => {
+  const thinking = await read("../src/renderer/components/chat/ThinkingBlock.tsx");
+  assert.match(thinking, /getThinking/);
+  assert.match(thinking, /thinkingCache/);
+  const list = await read("../src/renderer/components/chat/MessageList.tsx");
+  assert.match(list, /WINDOW_SIZE/);
+  assert.match(list, /scrollMemory/);
+  assert.match(list, /加载更早消息/);
+  const info = await read("../src/renderer/components/layout/SessionInfoDialog.tsx");
+  assert.match(info, /exportHtml/);
+  assert.match(info, /getSystemPrompt/);
 });

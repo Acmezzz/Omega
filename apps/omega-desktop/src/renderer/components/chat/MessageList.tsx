@@ -1,5 +1,6 @@
 import * as React from "react";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
 import { useAppStore } from "../../store/useAppStore";
 import { MessageBubble } from "./MessageBubble";
@@ -7,7 +8,10 @@ import { ToolCard } from "./ToolCard";
 import type { SessionMessage } from "../../types/dto";
 import type { ToolCardState } from "../../store/useAppStore";
 
-/** Group cards under the message they follow; leftovers render at the end. */
+const WINDOW_SIZE = 60;
+/** Per-session scroll memory: scrollTop + whether it was at the bottom. */
+const scrollMemory = new Map<string, { scrollTop: number; atBottom: boolean }>();
+
 function buildAttachmentIndex(messages: SessionMessage[], toolCards: ToolCardState[]) {
   const visibleIds = new Set(messages.map((message) => message.id));
   const byMessage = new Map<string, ToolCardState[]>();
@@ -31,12 +35,24 @@ export function MessageList(): React.ReactElement {
   const compacting = useAppStore((s) => s.compacting);
   const bashTail = useAppStore((s) => s.bashTail);
   const connection = useAppStore((s) => s.connection);
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const bashRef = React.useRef<HTMLPreElement | null>(null);
   const stickRef = React.useRef(true);
+  const [windowSize, setWindowSize] = React.useState(WINDOW_SIZE);
 
-  const visible = React.useMemo(() => messages.filter((m) => m.role !== "tool"), [messages]);
+  // Reset the render window when the session changes.
+  React.useEffect(() => {
+    setWindowSize(WINDOW_SIZE);
+  }, [activeSessionId]);
+
+  const visibleAll = React.useMemo(() => messages.filter((m) => m.role !== "tool"), [messages]);
+  const hiddenCount = Math.max(0, visibleAll.length - windowSize);
+  const visible = React.useMemo(
+    () => (hiddenCount > 0 ? visibleAll.slice(visibleAll.length - windowSize) : visibleAll),
+    [visibleAll, windowSize, hiddenCount],
+  );
   const lastAssistantId = React.useMemo(() => {
     for (let i = visible.length - 1; i >= 0; i -= 1) {
       if (visible[i].role === "assistant") return visible[i].id;
@@ -44,6 +60,28 @@ export function MessageList(): React.ReactElement {
     return null;
   }, [visible]);
   const { byMessage, loose } = React.useMemo(() => buildAttachmentIndex(visible, toolCards), [visible, toolCards]);
+
+  // Save the outgoing session's scroll position; restore the incoming one.
+  const prevSessionRef = React.useRef<string | null>(activeSessionId);
+  React.useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const prev = prevSessionRef.current;
+    if (prev !== null && prev !== activeSessionId && el) {
+      scrollMemory.set(prev, { scrollTop: el.scrollTop, atBottom: stickRef.current });
+    }
+    if (prev !== activeSessionId) {
+      prevSessionRef.current = activeSessionId;
+      const saved = activeSessionId ? scrollMemory.get(activeSessionId) : undefined;
+      if (saved && el) {
+        stickRef.current = saved.atBottom;
+        requestAnimationFrame(() => {
+          if (scrollRef.current) scrollRef.current.scrollTop = saved.scrollTop;
+        });
+      } else {
+        stickRef.current = true;
+      }
+    }
+  }, [activeSessionId]);
 
   const lastTextLength = visible.length > 0 ? visible[visible.length - 1].text.length : 0;
   React.useEffect(() => {
@@ -68,6 +106,18 @@ export function MessageList(): React.ReactElement {
       sx={{ height: "100%", overflowY: "auto", px: { xs: 2, sm: 4 }, py: 3 }}
     >
       <Box sx={{ maxWidth: 860, mx: "auto" }}>
+        {hiddenCount > 0 ? (
+          <Box sx={{ display: "flex", justifyContent: "center", mb: 2 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => setWindowSize((prev) => prev + WINDOW_SIZE)}
+              sx={{ textTransform: "none", borderRadius: "999px" }}
+            >
+              加载更早消息（剩余 {hiddenCount} 条）
+            </Button>
+          </Box>
+        ) : null}
         {visible.map((message) => (
           <React.Fragment key={message.id}>
             <MessageBubble message={message} streamingRun={thinkingActive && message.id === lastAssistantId} />

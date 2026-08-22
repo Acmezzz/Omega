@@ -1,6 +1,6 @@
 /** Electron main process. Agent stays privileged here; renderer only receives safe DTOs. */
-import { app, BrowserWindow, ipcMain, Menu, Notification, session as electronSession } from "electron";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { app, BrowserWindow, ipcMain, Menu, Notification, session as electronSession, shell } from "electron";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -9,6 +9,7 @@ import {
   findModel,
   forkCandidatesOf,
   forgetSessionPath,
+  getThinking,
   listCommands,
   listModels,
   listPiSessions,
@@ -20,6 +21,7 @@ import {
   streamToRenderer,
   THINKING_LEVELS,
 } from "./agent-bridge.js";
+import { buildSessionHtml } from "./export-html.js";
 import * as persistence from "./persistence.js";
 import * as stateReader from "./state-reader.js";
 import * as diffService from "./diff-service.js";
@@ -549,6 +551,42 @@ ipcMain.handle("omega:navigateTree", async (event, req) => {
     return okResult(sessionRecordOf(runtime));
   } catch (error) {
     return sessionBusyResult(error);
+  }
+});
+
+ipcMain.handle("omega:getThinking", (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  if (!req || typeof req.entryId !== "string" || !req.entryId.trim()) {
+    return errorResult("invalid_args", "entryId is required");
+  }
+  try {
+    return okResult({ text: getThinking(requireRuntime(), req.entryId.trim()) });
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:getSystemPrompt", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    return okResult({ systemPrompt: requireRuntime().session.systemPrompt ?? "" });
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:exportHtml", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    const record = sessionRecordOf(requireRuntime());
+    const dir = join(app.getPath("userData"), "exports");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${record.id}-${Date.now()}.html`);
+    writeFileSync(file, buildSessionHtml(record), "utf8");
+    void shell.showItemInFolder(file);
+    return okResult({ path: file });
+  } catch (error) {
+    return errorResult("write_failed", error instanceof Error ? error.message : String(error));
   }
 });
 

@@ -49,6 +49,9 @@ export interface OmegaBridge {
   gitStage(req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>>;
   gitUnstage(req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>>;
   gitCommit(req: { message: string }): Promise<IpcResult<{ hash: string }>>;
+  getThinking(req: { entryId: string }): Promise<IpcResult<{ text: string | null }>>;
+  getSystemPrompt(): Promise<IpcResult<{ systemPrompt: string }>>;
+  exportHtml(): Promise<IpcResult<{ path: string }>>;
   minimize(): Promise<IpcResult<void>>;
   toggleMaximize(): Promise<IpcResult<{ maximized: boolean }>>;
   closeWindow(): Promise<IpcResult<void>>;
@@ -130,6 +133,10 @@ export const ipc = {
   gitStage: async (req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>> => ok(await window.omega?.gitStage?.(req)),
   gitUnstage: async (req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>> => ok(await window.omega?.gitUnstage?.(req)),
   gitCommit: async (req: { message: string }): Promise<IpcResult<{ hash: string }>> => ok(await window.omega?.gitCommit?.(req)),
+  getThinking: async (req: { entryId: string }): Promise<IpcResult<{ text: string | null }>> =>
+    ok(await window.omega?.getThinking?.(req)),
+  getSystemPrompt: async (): Promise<IpcResult<{ systemPrompt: string }>> => ok(await window.omega?.getSystemPrompt?.()),
+  exportHtml: async (): Promise<IpcResult<{ path: string }>> => ok(await window.omega?.exportHtml?.()),
   minimize: async (): Promise<IpcResult<void>> => ok(await window.omega?.minimize?.()),
   toggleMaximize: async (): Promise<IpcResult<{ maximized: boolean }>> => ok(await window.omega?.toggleMaximize?.()),
   closeWindow: async (): Promise<IpcResult<void>> => ok(await window.omega?.closeWindow?.()),

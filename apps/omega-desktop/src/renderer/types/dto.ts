@@ -277,6 +277,7 @@ export interface SessionMessage {
   ts: string;
   entryId?: string;
   thinking?: string;
+  thinkingDeferred?: boolean;
 }
 
 export interface ToolCardSummary {
@@ -339,6 +340,12 @@ export interface AgentStateSnapshot {
   followUpMode: "all" | "one-at-a-time";
   autoCompaction: boolean;
   autoRetry: boolean;
+  stats: {
+    userMessages: number;
+    assistantMessages: number;
+    toolCalls: number;
+    totalMessages: number;
+  };
   modelFallbackMessage: string | null;
   messages?: SessionMessage[];
   toolCards?: ToolCardSummary[];
