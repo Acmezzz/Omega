@@ -23,6 +23,7 @@ import {
 import * as persistence from "./persistence.js";
 import * as stateReader from "./state-reader.js";
 import * as diffService from "./diff-service.js";
+import * as workspaceService from "./workspace-service.js";
 
 const MAIN_DIR = dirname(fileURLToPath(import.meta.url));
 const DEV_ROOT = resolve(MAIN_DIR, "..", "..", "..");
@@ -770,6 +771,111 @@ ipcMain.handle("omega:diffWorkspace", (event, req) => {
     return okResult(diffService.computeDiff(cwd));
   } catch (error) {
     return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Workspace layer: file tree / viewer / @ index / bash passthrough / git review
+// ---------------------------------------------------------------------------
+
+function requireString(req, field, max = 4096) {
+  if (typeof req?.[field] !== "string" || !req[field] || req[field].length > max) {
+    throw new Error(`${field} is required`);
+  }
+  return req[field];
+}
+
+ipcMain.handle("omega:listDir", (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    const rel = typeof req?.path === "string" ? req.path : "";
+    if (rel.length > 4096) return errorResult("invalid_args", "path too long");
+    return okResult(workspaceService.listDir(activeCwd ?? rootOf(), rel));
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:readFile", (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    return okResult(workspaceService.readFile(activeCwd ?? rootOf(), requireString(req, "path")));
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:fileIndex", (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    const query = typeof req?.query === "string" ? req.query.slice(0, 256) : "";
+    return okResult(workspaceService.fileIndex(activeCwd ?? rootOf(), query));
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:bash", async (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  const command = typeof req?.command === "string" ? req.command.trim() : "";
+  if (!command) return errorResult("invalid_args", "command is required");
+  if (command.length > 8192) return errorResult("invalid_args", "command too long");
+  try {
+    const session = requireSession();
+    const result = await session.executeBash(command, undefined, {
+      excludeFromContext: req?.excludeFromContext === true,
+      id: `user-bash-${Date.now()}`,
+    });
+    return okResult({ output: result.output, exitCode: result.exitCode, cancelled: result.cancelled });
+  } catch (error) {
+    return errorResult("bash_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:gitSnapshot", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    return okResult(diffService.computeSnapshot(activeCwd ?? rootOf()));
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+function normalizeGitItems(req) {
+  if (!Array.isArray(req?.items)) throw new Error("items[] is required");
+  return req.items.slice(0, 200).map((item) => ({
+    path: typeof item?.path === "string" ? item.path.slice(0, 4096) : "",
+    hunks: Array.isArray(item?.hunks) ? item.hunks.filter((hunk) => typeof hunk === "string").slice(0, 100) : undefined,
+  }));
+}
+
+ipcMain.handle("omega:gitStage", (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    return okResult(diffService.stageItems(activeCwd ?? rootOf(), normalizeGitItems(req)));
+  } catch (error) {
+    return errorResult("git_unavailable", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:gitUnstage", (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    return okResult(diffService.unstageItems(activeCwd ?? rootOf(), normalizeGitItems(req)));
+  } catch (error) {
+    return errorResult("git_unavailable", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:gitCommit", (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  const message = typeof req?.message === "string" ? req.message.trim() : "";
+  if (!message) return errorResult("invalid_args", "message is required");
+  if (message.length > 8000) return errorResult("invalid_args", "message too long");
+  try {
+    return okResult(diffService.commitIndexed(activeCwd ?? rootOf(), message));
+  } catch (error) {
+    return errorResult("git_unavailable", error instanceof Error ? error.message : String(error));
   }
 });
 

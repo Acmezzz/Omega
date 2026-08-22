@@ -81,6 +81,10 @@ export function Composer(): React.ReactElement {
   const [attachments, setAttachments] = React.useState<Attachment[]>([]);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [historyIndex, setHistoryIndex] = React.useState(0);
+  const [atItems, setAtItems] = React.useState<string[]>([]);
+  const [atOpen, setAtOpen] = React.useState(false);
+  const [atIndex, setAtIndex] = React.useState(0);
+  const atTokenRef = React.useRef("");
   const taRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
   const isComposingRef = React.useRef(false);
@@ -89,6 +93,7 @@ export function Composer(): React.ReactElement {
   const sendingRef = React.useRef(false);
   /** Session that the current `text` belongs to (guards the draft persist effect). */
   const textSessionRef = React.useRef<string | null>(null);
+  const atTimerRef = React.useRef<number>(0);
 
   const setConnection = useAppStore((s) => s.setConnection);
   const setCommandPaletteOpen = useAppStore((s) => s.setCommandPaletteOpen);
@@ -182,10 +187,48 @@ export function Composer(): React.ReactElement {
     [addFiles],
   );
 
+  const runBash = React.useCallback(
+    (rawValue: string) => {
+      const exclude = rawValue.startsWith("!!");
+      const command = (exclude ? rawValue.slice(2) : rawValue.slice(1)).trim();
+      setText("");
+      setHistoryOpen(false);
+      clearDraft(textSessionRef.current);
+      if (!command) return;
+      useAppStore.getState().appendMessage({
+        role: "user",
+        id: `bash-${Date.now()}`,
+        text: rawValue.split("\n")[0],
+        ts: new Date().toISOString(),
+      });
+      setConnection("running");
+      void (async () => {
+        try {
+          const res = await ipc.bash({ command, excludeFromContext: exclude });
+          useAppStore.getState().appendMessage({
+            role: "assistant",
+            id: `bash-out-${Date.now()}`,
+            text: res.ok
+              ? `\`\`\`\n${res.data.output || "(无输出)"}\n\`\`\`${res.data.exitCode ? `\n\nexit ${res.data.exitCode}` : ""}`
+              : `⚠️ 命令失败：${res.message ?? "未知错误"}`,
+            ts: new Date().toISOString(),
+          });
+        } finally {
+          useAppStore.getState().setConnection("ready");
+        }
+      })();
+    },
+    [setConnection],
+  );
+
   const send = React.useCallback(
     (behavior?: "steer" | "followUp") => {
       const value = text.trim();
       if ((!value && attachments.length === 0) || sendingRef.current) return;
+      if (value.startsWith("!")) {
+        runBash(value);
+        return;
+      }
       sendingRef.current = true;
       setTimeout(() => {
         sendingRef.current = false;
@@ -254,7 +297,7 @@ export function Composer(): React.ReactElement {
         }
       })();
     },
-    [text, attachments, running, setConnection, setComposerError],
+    [text, attachments, running, setConnection, setComposerError, runBash],
   );
 
   const abort = React.useCallback(async () => {
@@ -283,6 +326,44 @@ export function Composer(): React.ReactElement {
     requestAnimationFrame(() => taRef.current?.focus());
   }, []);
 
+  // `@` file completion: query the main-process index with a small debounce.
+  const detectAtToken = React.useCallback((value: string, caret: number) => {
+    const before = value.slice(0, caret);
+    const match = /(?:^|\s)@([\w./\\-]*)$/.exec(before);
+    if (!match) {
+      setAtOpen(false);
+      atTokenRef.current = "";
+      return;
+    }
+    atTokenRef.current = match[1];
+    setAtOpen(true);
+    setAtIndex(0);
+    window.clearTimeout(atTimerRef.current);
+    atTimerRef.current = window.setTimeout(() => {
+      void ipc.fileIndex({ query: match[1] }).then((res) => {
+        if (res.ok) {
+          setAtItems(res.data);
+          if (res.data.length === 0) setAtOpen(false);
+        }
+      });
+    }, 150);
+  }, []);
+
+  const applyAt = React.useCallback((path: string) => {
+    const ta = taRef.current;
+    setAtOpen(false);
+    setText((prev) => {
+      if (!ta) return prev;
+      const caret = ta.selectionStart ?? prev.length;
+      const before = prev.slice(0, caret);
+      const token = atTokenRef.current;
+      const atPos = before.lastIndexOf(`@${token}`);
+      if (atPos === -1) return prev;
+      return `${prev.slice(0, atPos)}@${path} ${prev.slice(caret)}`;
+    });
+    requestAnimationFrame(() => taRef.current?.focus());
+  }, []);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const nativeEvent = e.nativeEvent;
     const sendShortcut = e.key === "Enter" && !e.shiftKey;
@@ -292,6 +373,29 @@ export function Composer(): React.ReactElement {
     if (sendShortcut && (isComposing || recentlyComposed)) {
       e.preventDefault();
       return;
+    }
+
+    if (atOpen && atItems.length > 0 && !isComposing) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setAtIndex((prev) => Math.max(0, prev - 1));
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setAtIndex((prev) => Math.min(atItems.length - 1, prev + 1));
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setAtOpen(false);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        applyAt(atItems[atIndex]);
+        return;
+      }
     }
 
     if (historyOpen && !isComposing) {
@@ -343,8 +447,7 @@ export function Composer(): React.ReactElement {
         position: "relative",
       }}
     >
-      {historyOpen && inputHistory.length > 0 ? (
-        <Paper
+      {historyOpen && inputHistory.length > 0 ? (        <Paper
           elevation={0}
           sx={{
             position: "absolute",
@@ -380,6 +483,49 @@ export function Composer(): React.ReactElement {
             >
               <Typography sx={{ fontSize: 12.5, color: "var(--omega-text)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                 {entry}
+              </Typography>
+            </Box>
+          ))}
+        </Paper>
+      ) : null}
+
+      {atOpen && atItems.length > 0 ? (
+        <Paper
+          elevation={0}
+          sx={{
+            position: "absolute",
+            bottom: "calc(100% + 6px)",
+            left: 0,
+            right: 0,
+            maxHeight: 220,
+            overflowY: "auto",
+            border: "1px solid var(--omega-border)",
+            borderRadius: "14px",
+            p: 0.75,
+            zIndex: 20,
+          }}
+        >
+          <Typography sx={{ fontSize: 10.5, fontWeight: 700, color: "var(--omega-text-dim)", px: 1, py: 0.5, letterSpacing: "0.05em" }}>
+            文件（@ 引用，↑↓ 选择）
+          </Typography>
+          {atItems.map((path, index) => (
+            <Box
+              key={path}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                applyAt(path);
+              }}
+              sx={{
+                px: 1.25,
+                py: 0.5,
+                borderRadius: "8px",
+                cursor: "pointer",
+                background: index === atIndex ? "var(--omega-selected)" : "transparent",
+                "&:hover": { background: "var(--omega-hover-fill)" },
+              }}
+            >
+              <Typography sx={{ fontSize: 12, fontFamily: "ui-monospace, Consolas, monospace", color: "var(--omega-text)" }} noWrap>
+                {path}
               </Typography>
             </Box>
           ))}
@@ -485,6 +631,7 @@ export function Composer(): React.ReactElement {
           onChange={(e) => {
             setText(e.target.value);
             setHistoryOpen(false);
+            detectAtToken(e.target.value, e.target.selectionStart ?? e.target.value.length);
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}

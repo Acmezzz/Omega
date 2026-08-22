@@ -3,6 +3,7 @@ import { ThemeProvider } from "./theme/ThemeProvider";
 import { Workbench } from "./components/layout/Workbench";
 import { CommandPalette } from "./components/layout/CommandPalette";
 import { TreeOverlay } from "./components/layout/TreeOverlay";
+import { FileViewer } from "./components/files/FileViewer";
 import { useAppStore } from "./store/useAppStore";
 import { ipc } from "./ipc/client";
 import type { SafeEvent } from "./types/events";
@@ -298,6 +299,7 @@ export function App(): React.ReactElement {
       <Workbench />
       <CommandPalette />
       <TreeOverlay />
+      <FileViewer />
     </ThemeProvider>
   );
 }

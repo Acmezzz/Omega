@@ -7,6 +7,7 @@
  * re-rendering the whole tree. See system_design.md §2.2.
  */
 import { create } from "zustand";
+import { ipc } from "../ipc/client";
 import type {
   SessionSummary,
   SessionRecord,
@@ -22,6 +23,8 @@ import type {
   SlashCommandInfo,
   AuthStatus,
   UsageSnapshot,
+  GitSnapshot,
+  FileReadResult,
 } from "../types/dto";
 import type { Palette, ThemeMode } from "../theme/palettes";
 import { applyModeWithTransition, paletteForMode } from "../theme/palettes";
@@ -60,6 +63,15 @@ export interface LayoutState {
   rightTab: "workflow" | "scout" | "diff";
   commandPaletteOpen: boolean;
   treeOpen: boolean;
+  leftTab: "sessions" | "files";
+}
+
+export interface ViewerState {
+  open: boolean;
+  path: string | null;
+  loading: boolean;
+  error: string | null;
+  file: FileReadResult | null;
 }
 
 export interface AppState {
@@ -97,6 +109,8 @@ export interface AppState {
   extensionLoading: boolean;
   diff: WorkspaceDiff | null;
   approval: ChangeApprovalResult | null;
+  gitSnapshot: GitSnapshot | null;
+  viewer: ViewerState;
 
   permission: AgentPermissionState | null;
   plan: AgentPlan | null;
@@ -140,6 +154,9 @@ export interface AppState {
   setExtensionLoading: (loading: boolean) => void;
   setDiff: (diff: WorkspaceDiff | null) => void;
   setApproval: (result: ChangeApprovalResult | null) => void;
+  setGitSnapshot: (snapshot: GitSnapshot | null) => void;
+  openViewer: (path: string) => Promise<void>;
+  closeViewer: () => void;
 
   setLayout: (patch: Partial<LayoutState>) => void;
   toggleRightPanel: () => void;
@@ -200,6 +217,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   extensionLoading: false,
   diff: null,
   approval: null,
+  gitSnapshot: null,
+  viewer: { open: false, path: null, loading: false, error: null, file: null },
 
   permission: null,
   plan: null,
@@ -209,6 +228,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     rightTab: "workflow",
     commandPaletteOpen: false,
     treeOpen: false,
+    leftTab: "sessions",
   },
 
   setConnection: (connection) => set({ connection }),
@@ -395,6 +415,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setExtensionLoading: (extensionLoading) => set({ extensionLoading }),
   setDiff: (diff) => set({ diff }),
   setApproval: (approval) => set({ approval }),
+  setGitSnapshot: (gitSnapshot) => set({ gitSnapshot }),
+  openViewer: async (path) => {
+    set({ viewer: { open: true, path, loading: true, error: null, file: null } });
+    const res = await ipc.readFile({ path });
+    const current = useAppStore.getState().viewer;
+    if (current.path !== path) return; // switched away meanwhile
+    if (res.ok) set({ viewer: { open: true, path, loading: false, error: null, file: res.data } });
+    else set({ viewer: { open: true, path, loading: false, error: res.message, file: null } });
+  },
+  closeViewer: () => set({ viewer: { open: false, path: null, loading: false, error: null, file: null } }),
 
   setLayout: (patch) =>
     set((state) => ({ layout: { ...state.layout, ...patch } })),

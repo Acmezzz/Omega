@@ -19,6 +19,12 @@ import type {
   PromptImage,
   SessionTree,
   ForkCandidate,
+  DirListing,
+  FileReadResult,
+  BashResultDTO,
+  GitSnapshot,
+  GitApplyResult,
+  GitStageItem,
 } from "../types/dto";
 
 export interface OmegaBridge {
@@ -35,6 +41,14 @@ export interface OmegaBridge {
   getForkCandidates(): Promise<IpcResult<ForkCandidate[]>>;
   fork(req: { entryId: string }): Promise<IpcResult<{ record: SessionRecord; selectedText: string }>>;
   navigateTree(req: { targetId: string }): Promise<IpcResult<SessionRecord>>;
+  listDir(req: { path: string }): Promise<IpcResult<DirListing>>;
+  readFile(req: { path: string }): Promise<IpcResult<FileReadResult>>;
+  fileIndex(req: { query: string }): Promise<IpcResult<string[]>>;
+  bash(req: { command: string; excludeFromContext?: boolean }): Promise<IpcResult<BashResultDTO>>;
+  gitSnapshot(): Promise<IpcResult<GitSnapshot>>;
+  gitStage(req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>>;
+  gitUnstage(req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>>;
+  gitCommit(req: { message: string }): Promise<IpcResult<{ hash: string }>>;
   minimize(): Promise<IpcResult<void>>;
   toggleMaximize(): Promise<IpcResult<{ maximized: boolean }>>;
   closeWindow(): Promise<IpcResult<void>>;
@@ -107,6 +121,15 @@ export const ipc = {
     ok(await window.omega?.fork?.(req)),
   navigateTree: async (req: { targetId: string }): Promise<IpcResult<SessionRecord>> =>
     ok(await window.omega?.navigateTree?.(req)),
+  listDir: async (req: { path: string }): Promise<IpcResult<DirListing>> => ok(await window.omega?.listDir?.(req)),
+  readFile: async (req: { path: string }): Promise<IpcResult<FileReadResult>> => ok(await window.omega?.readFile?.(req)),
+  fileIndex: async (req: { query: string }): Promise<IpcResult<string[]>> => ok(await window.omega?.fileIndex?.(req)),
+  bash: async (req: { command: string; excludeFromContext?: boolean }): Promise<IpcResult<BashResultDTO>> =>
+    ok(await window.omega?.bash?.(req)),
+  gitSnapshot: async (): Promise<IpcResult<GitSnapshot>> => ok(await window.omega?.gitSnapshot?.()),
+  gitStage: async (req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>> => ok(await window.omega?.gitStage?.(req)),
+  gitUnstage: async (req: { items: GitStageItem[] }): Promise<IpcResult<GitApplyResult>> => ok(await window.omega?.gitUnstage?.(req)),
+  gitCommit: async (req: { message: string }): Promise<IpcResult<{ hash: string }>> => ok(await window.omega?.gitCommit?.(req)),
   minimize: async (): Promise<IpcResult<void>> => ok(await window.omega?.minimize?.()),
   toggleMaximize: async (): Promise<IpcResult<{ maximized: boolean }>> => ok(await window.omega?.toggleMaximize?.()),
   closeWindow: async (): Promise<IpcResult<void>> => ok(await window.omega?.closeWindow?.()),

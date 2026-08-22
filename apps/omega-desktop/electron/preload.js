@@ -158,6 +158,43 @@ contextBridge.exposeInMainWorld("omega", {
     }
     return ipcRenderer.invoke("omega:navigateTree", { targetId: req.targetId });
   },
+  listDir: (req) =>
+    ipcRenderer.invoke("omega:listDir", { path: safeString(req?.path, 4096) ?? "" }),
+  readFile: (req) => {
+    if (!req || typeof req.path !== "string" || !req.path.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "path is required" });
+    }
+    return ipcRenderer.invoke("omega:readFile", { path: req.path });
+  },
+  fileIndex: (req) => ipcRenderer.invoke("omega:fileIndex", { query: safeString(req?.query, 256) ?? "" }),
+  bash: (req) => {
+    if (!req || typeof req.command !== "string" || !req.command.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "command is required" });
+    }
+    return ipcRenderer.invoke("omega:bash", {
+      command: req.command.slice(0, 8192),
+      excludeFromContext: req?.excludeFromContext === true,
+    });
+  },
+  gitSnapshot: () => ipcRenderer.invoke("omega:gitSnapshot"),
+  gitStage: (req) => {
+    if (!Array.isArray(req?.items)) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "items[] is required" });
+    }
+    return ipcRenderer.invoke("omega:gitStage", { items: req.items.slice(0, 200) });
+  },
+  gitUnstage: (req) => {
+    if (!Array.isArray(req?.items)) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "items[] is required" });
+    }
+    return ipcRenderer.invoke("omega:gitUnstage", { items: req.items.slice(0, 200) });
+  },
+  gitCommit: (req) => {
+    if (!req || typeof req.message !== "string" || !req.message.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "message is required" });
+    }
+    return ipcRenderer.invoke("omega:gitCommit", { message: req.message.slice(0, 8000) });
+  },
   queryExtensionState: (req) => {
     const scope = typeof req?.scope === "string" ? req.scope : "all";
     if (!["all", "workflow", "scout"].includes(scope)) {

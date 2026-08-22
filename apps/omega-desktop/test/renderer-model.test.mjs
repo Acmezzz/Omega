@@ -315,3 +315,40 @@ test("fork, tree overlay, and model picker exist as surfaces", async () => {
   const bubble = await read("../src/renderer/components/chat/MessageBubble.tsx");
   assert.match(bubble, /ipc\.fork/);
 });
+
+test("workspace layer IPC stays path-safe behind senderAllowed", async () => {
+  const main = await read("../electron/main.js");
+  for (const channel of ["omega:listDir", "omega:readFile", "omega:fileIndex", "omega:bash", "omega:gitSnapshot", "omega:gitStage", "omega:gitUnstage", "omega:gitCommit"]) {
+    assert.ok(main.includes(`ipcMain.handle("${channel}",`), `${channel} handler present`);
+  }
+  const workspace = await read("../electron/workspace-service.js");
+  assert.match(workspace, /Path escapes the workspace root/);
+  assert.match(workspace, /IGNORED_DIRS/);
+});
+
+test("git review backend applies hunk patches via stdin only", async () => {
+  const diff = await read("../electron/diff-service.js");
+  assert.match(diff, /"--cached", "--recount", "-"/);
+  assert.match(diff, /"-R", "--cached"/);
+  assert.match(diff, /"commit", "-F", "-"/);
+  assert.match(diff, /computeSnapshot/);
+  assert.match(diff, /parseStatusPath/);
+});
+
+test("composer supports @ file completion and ! bash passthrough", async () => {
+  const source = await read("../src/renderer/components/chat/Composer.tsx");
+  assert.match(source, /detectAtToken/);
+  assert.match(source, /ipc\.fileIndex/);
+  assert.match(source, /runBash/);
+  assert.match(source, /startsWith\("!"/);
+});
+
+test("left nav exposes the files tab and viewer", async () => {
+  const leftNav = await read("../src/renderer/components/layout/LeftNav.tsx");
+  assert.match(leftNav, /FileTree/);
+  assert.match(leftNav, /leftTab/);
+  const viewer = await read("../src/renderer/components/files/FileViewer.tsx");
+  assert.match(viewer, /binary/);
+  const markdown = await read("../src/renderer/components/common/Markdown.tsx");
+  assert.match(markdown, /openViewer/);
+});

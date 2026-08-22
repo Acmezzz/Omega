@@ -232,6 +232,7 @@ export interface DiffHunk {
     newLine?: number;
     content: string;
   }>;
+  raw?: string;
 }
 
 export interface DiffFile {
@@ -382,6 +383,56 @@ export interface SessionTree {
 export interface ForkCandidate {
   entryId: string;
   text: string;
+}
+
+export interface DirEntryInfo {
+  name: string;
+  isDir: boolean;
+  size: number;
+}
+
+export interface DirListing {
+  path: string;
+  entries: DirEntryInfo[];
+}
+
+export interface FileReadResult {
+  path: string;
+  size: number;
+  binary: boolean;
+  content?: string;
+  truncated?: boolean;
+}
+
+export interface BashResultDTO {
+  output: string;
+  exitCode: number | undefined;
+  cancelled: boolean;
+}
+
+export interface GitCommitInfo {
+  hash: string;
+  message: string;
+}
+
+export interface GitSnapshot {
+  generatedAt: string;
+  repoRoot: string;
+  isGitRepo: boolean;
+  branch: string;
+  log: GitCommitInfo[];
+  unstaged: DiffFile[];
+  staged: DiffFile[];
+}
+
+export interface GitApplyResult {
+  applied: boolean;
+  errors: string[];
+}
+
+export interface GitStageItem {
+  path: string;
+  hunks?: string[];
 }
 
 // ===== extension state aggregation (single pull) =====
