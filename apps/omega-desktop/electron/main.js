@@ -542,6 +542,11 @@ ipcMain.handle("omega:getThinking", (event, req) => {
   return rpc("getThinking", { entryId: req.entryId }, "read_failed");
 });
 
+ipcMain.handle("omega:listResources", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  return rpc("listResources", {}, "read_failed");
+});
+
 ipcMain.handle("omega:getSystemPrompt", (event) => {
   if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
   return rpc("getSystemPrompt", {}, "read_failed");

@@ -380,3 +380,16 @@ test("R3: thinking blocks defer loading and message list windows", async () => {
   assert.match(info, /exportHtml/);
   assert.match(info, /getSystemPrompt/);
 });
+
+test("R5: resource inventory is exposed through the worker and surfaced in settings", async () => {
+  const worker = await read("../electron/worker.mjs");
+  assert.match(worker, /listResources/);
+  assert.match(worker, /getSkills\(\)/);
+  assert.match(worker, /getPrompts\(\)/);
+  const main = await read("../electron/main.js");
+  assert.ok(main.includes('ipcMain.handle("omega:listResources",'));
+  const settings = await read("../src/renderer/components/layout/SettingsDialog.tsx");
+  assert.match(settings, /listResources/);
+  assert.match(settings, /扩展（/);
+  assert.match(settings, /Skills（/);
+});

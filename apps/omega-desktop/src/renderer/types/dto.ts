@@ -392,6 +392,32 @@ export interface ForkCandidate {
   text: string;
 }
 
+export interface ExtensionResource {
+  name: string;
+  path: string;
+  commands: number;
+  tools: number;
+}
+
+export interface SkillResource {
+  name: string;
+  description: string;
+  filePath: string;
+}
+
+export interface PromptResource {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  filePath: string;
+}
+
+export interface ResourceBundle {
+  extensions: ExtensionResource[];
+  skills: SkillResource[];
+  prompts: PromptResource[];
+}
+
 export interface DirEntryInfo {
   name: string;
   isDir: boolean;

@@ -25,6 +25,7 @@ import type {
   GitSnapshot,
   GitApplyResult,
   GitStageItem,
+  ResourceBundle,
 } from "../types/dto";
 
 export interface OmegaBridge {
@@ -52,6 +53,7 @@ export interface OmegaBridge {
   getThinking(req: { entryId: string }): Promise<IpcResult<{ text: string | null }>>;
   getSystemPrompt(): Promise<IpcResult<{ systemPrompt: string }>>;
   exportHtml(): Promise<IpcResult<{ path: string }>>;
+  listResources(): Promise<IpcResult<ResourceBundle>>;
   minimize(): Promise<IpcResult<void>>;
   toggleMaximize(): Promise<IpcResult<{ maximized: boolean }>>;
   closeWindow(): Promise<IpcResult<void>>;
@@ -137,6 +139,7 @@ export const ipc = {
     ok(await window.omega?.getThinking?.(req)),
   getSystemPrompt: async (): Promise<IpcResult<{ systemPrompt: string }>> => ok(await window.omega?.getSystemPrompt?.()),
   exportHtml: async (): Promise<IpcResult<{ path: string }>> => ok(await window.omega?.exportHtml?.()),
+  listResources: async (): Promise<IpcResult<ResourceBundle>> => ok(await window.omega?.listResources?.()),
   minimize: async (): Promise<IpcResult<void>> => ok(await window.omega?.minimize?.()),
   toggleMaximize: async (): Promise<IpcResult<{ maximized: boolean }>> => ok(await window.omega?.toggleMaximize?.()),
   closeWindow: async (): Promise<IpcResult<void>> => ok(await window.omega?.closeWindow?.()),

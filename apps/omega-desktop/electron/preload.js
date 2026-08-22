@@ -203,6 +203,7 @@ contextBridge.exposeInMainWorld("omega", {
   },
   getSystemPrompt: () => ipcRenderer.invoke("omega:getSystemPrompt"),
   exportHtml: () => ipcRenderer.invoke("omega:exportHtml"),
+  listResources: () => ipcRenderer.invoke("omega:listResources"),
   queryExtensionState: (req) => {
     const scope = typeof req?.scope === "string" ? req.scope : "all";
     if (!["all", "workflow", "scout"].includes(scope)) {

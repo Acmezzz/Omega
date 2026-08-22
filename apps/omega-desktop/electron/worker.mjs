@@ -14,6 +14,7 @@
  * A crash or hang in the agent/extension code no longer takes down the
  * window: the main process owns the UI and proxies every omega:* RPC here.
  */
+import { basename } from "node:path";
 import * as bridge from "./agent-bridge.js";
 
 /** @type {import("./agent-bridge.js").ReturnType<typeof bridge.createRuntime> | null} */
@@ -195,6 +196,31 @@ const methods = {
     }),
   resolveSessionPath: ({ sessionId }) => bridge.resolveSessionPath(sessionId),
   sessionRecord: () => bridge.sessionRecordOf(runtime),
+  /** Extensions / skills / prompt templates discovered for the active cwd. */
+  listResources: () => {
+    const loader = runtime.session.resourceLoader;
+    const extensions = loader
+      .getExtensions()
+      .extensions.filter((extension) => !extension.hidden)
+      .map((extension) => ({
+        name: basename(extension.path) || extension.path,
+        path: extension.sourceInfo?.path ?? extension.path,
+        commands: extension.commands?.size ?? 0,
+        tools: extension.tools?.size ?? 0,
+      }));
+    const skills = loader.getSkills().skills.map((skill) => ({
+      name: skill.name,
+      description: skill.description ?? "",
+      filePath: skill.filePath,
+    }));
+    const prompts = loader.getPrompts().prompts.map((prompt) => ({
+      name: prompt.name,
+      description: prompt.description ?? "",
+      argumentHint: prompt.argumentHint,
+      filePath: prompt.filePath,
+    }));
+    return { extensions, skills, prompts };
+  },
   dispose: () => runtime.dispose(),
 };
 
