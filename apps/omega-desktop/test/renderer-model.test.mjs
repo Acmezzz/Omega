@@ -205,20 +205,21 @@ test("command palette discovers commands instead of hardcoding the V1 list", asy
 });
 
 test("prompt channel supports steering interrupts while streaming", async () => {
+  const worker = await read("../electron/worker.mjs");
   const main = await read("../electron/main.js");
   assert.match(main, /PROMPT_BEHAVIORS/);
   assert.match(main, /"steer"/);
   // Streaming prompts bypass the serial queue so steer actually interrupts.
-  assert.match(main, /if \(session\.isStreaming\)/);
+  assert.match(worker, /session\.isStreaming/);
   // Auto-title skips slash commands and image placeholders.
-  assert.match(main, /autoTitleFor/);
-  assert.match(main, /startsWith\("\/"\)/);
+  assert.match(worker, /autoTitleFor/);
+  assert.match(worker, /startsWith\("\/"\)/);
 });
 
 test("session_busy is reported when fork/navigate hit a running turn", async () => {
-  const main = await read("../electron/main.js");
-  assert.match(main, /sessionBusyResult/);
-  assert.match(main, /session_busy/);
+  const worker = await read("../electron/worker.mjs");
+  assert.match(worker, /withBusyCode/);
+  assert.match(worker, /session_busy/);
 });
 
 test("composer sends are non-blocking with optimistic rollback guards", async () => {

@@ -11,7 +11,7 @@
     "build:renderer": "vite build",
     "watch:renderer": "vite build --watch",
     "dev": "vite build --watch",
-    "typecheck": "node --check electron/main.js && node --check electron/agent-bridge.js && node --check electron/preload.js && node --check electron/state-reader.js && node --check electron/diff-service.js && node --check electron/persistence.js && node --check electron/workspace-service.js",
+    "typecheck": "node --check electron/main.js && node --check electron/agent-bridge.js && node --check electron/preload.js && node --check electron/state-reader.js && node --check electron/diff-service.js && node --check electron/persistence.js && node --check electron/workspace-service.js && node --check electron/worker.mjs",
     "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
     "test": "node --test test/*.test.mjs",
     "sdk-check": "node scripts/sdk-check.mjs",

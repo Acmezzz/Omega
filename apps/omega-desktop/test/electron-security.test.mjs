@@ -13,7 +13,7 @@ test("main configures Electron isolation and navigation boundaries", async () =>
   assert.match(source, /setWindowOpenHandler/);
   assert.match(source, /will-navigate/);
   assert.match(source, /senderAllowed/);
-  assert.match(source, /runtime\?\.dispose/);
+  assert.match(source, /await worker\?\.kill/);
 });
 
 test("bridge filters raw agent events and does not forward sensitive payloads", async () => {
@@ -178,7 +178,8 @@ test("deleteSession only removes files inside the pi sessions root", async () =>
   const main = await read("../electron/main.js");
   assert.match(main, /piSessionsRoot/);
   assert.match(main, /Refusing to delete a file outside the pi sessions directory/);
-  assert.match(main, /forgetSessionPath/);
+  const worker = await read("../electron/worker.mjs");
+  assert.match(worker, /resolveSessionPath/);
 });
 
 test("prompt images are validated in both preload and main", async () => {
@@ -197,7 +198,7 @@ test("main notifies on completion only when the window is unfocused", async () =
 });
 
 test("first prompt auto-titles an unnamed session", async () => {
-  const main = await read("../electron/main.js");
-  assert.match(main, /setSessionName/);
-  assert.match(main, /session\.sessionName/);
+  const worker = await read("../electron/worker.mjs");
+  assert.match(worker, /autoTitleFor/);
+  assert.match(worker, /sessionName/);
 });
