@@ -8,6 +8,7 @@ import type {
   ExtensionStateBundle,
   SessionSummary,
   SessionRecord,
+  SessionMessage,
   WorkspaceDiff,
   ChangeApprovalResult,
   AgentStateSnapshot,
@@ -16,6 +17,8 @@ import type {
   SlashCommandInfo,
   AuthStatus,
   PromptImage,
+  SessionTree,
+  ForkCandidate,
 } from "../types/dto";
 
 export interface OmegaBridge {
@@ -27,6 +30,11 @@ export interface OmegaBridge {
     autoCompaction?: boolean;
     autoRetry?: boolean;
   }): Promise<IpcResult<AgentStateSnapshot>>;
+  clearQueue(): Promise<IpcResult<{ steering: string[]; followUp: string[] }>>;
+  getSessionTree(): Promise<IpcResult<SessionTree>>;
+  getForkCandidates(): Promise<IpcResult<ForkCandidate[]>>;
+  fork(req: { entryId: string }): Promise<IpcResult<{ record: SessionRecord; selectedText: string }>>;
+  navigateTree(req: { targetId: string }): Promise<IpcResult<SessionRecord>>;
   minimize(): Promise<IpcResult<void>>;
   toggleMaximize(): Promise<IpcResult<{ maximized: boolean }>>;
   closeWindow(): Promise<IpcResult<void>>;
@@ -91,6 +99,14 @@ export const ipc = {
     autoCompaction?: boolean;
     autoRetry?: boolean;
   }): Promise<IpcResult<AgentStateSnapshot>> => ok(await window.omega?.updateSettings?.(req)),
+  clearQueue: async (): Promise<IpcResult<{ steering: string[]; followUp: string[] }>> =>
+    ok(await window.omega?.clearQueue?.()),
+  getSessionTree: async (): Promise<IpcResult<SessionTree>> => ok(await window.omega?.getSessionTree?.()),
+  getForkCandidates: async (): Promise<IpcResult<ForkCandidate[]>> => ok(await window.omega?.getForkCandidates?.()),
+  fork: async (req: { entryId: string }): Promise<IpcResult<{ record: SessionRecord; selectedText: string }>> =>
+    ok(await window.omega?.fork?.(req)),
+  navigateTree: async (req: { targetId: string }): Promise<IpcResult<SessionRecord>> =>
+    ok(await window.omega?.navigateTree?.(req)),
   minimize: async (): Promise<IpcResult<void>> => ok(await window.omega?.minimize?.()),
   toggleMaximize: async (): Promise<IpcResult<{ maximized: boolean }>> => ok(await window.omega?.toggleMaximize?.()),
   closeWindow: async (): Promise<IpcResult<void>> => ok(await window.omega?.closeWindow?.()),

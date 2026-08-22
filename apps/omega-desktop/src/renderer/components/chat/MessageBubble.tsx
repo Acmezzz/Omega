@@ -5,7 +5,11 @@ import IconButton from "@mui/material/IconButton";
 import Tooltip from "@mui/material/Tooltip";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import CheckIcon from "@mui/icons-material/Check";
+import CallSplitIcon from "@mui/icons-material/CallSplit";
 import { Markdown } from "../common/Markdown";
+import { ThinkingBlock } from "./ThinkingBlock";
+import { useAppStore } from "../../store/useAppStore";
+import { ipc } from "../../ipc/client";
 import type { SessionMessage } from "../../types/dto";
 
 function formatTime(ts: string): string {
@@ -37,12 +41,20 @@ async function copyText(text: string): Promise<boolean> {
 
 export interface MessageBubbleProps {
   message: SessionMessage;
+  /** True only for the last assistant message during the active thinking run. */
+  streamingRun: boolean;
 }
 
-export function MessageBubble({ message }: MessageBubbleProps): React.ReactElement {
+function MessageBubbleInner({ message, streamingRun }: MessageBubbleProps): React.ReactElement {
   const [copied, setCopied] = React.useState(false);
+  const [forking, setForking] = React.useState(false);
   const isUser = message.role === "user";
   const isError = message.role === "assistant" && message.text.startsWith("⚠️");
+  const connection = useAppStore((s) => s.connection);
+  const setComposerPrefill = useAppStore((s) => s.setComposerPrefill);
+  const loadTranscript = useAppStore((s) => s.loadTranscript);
+  const setActiveSession = useAppStore((s) => s.setActiveSession);
+  const setAgent = useAppStore((s) => s.setAgent);
 
   const handleCopy = React.useCallback(async () => {
     const ok = await copyText(message.text);
@@ -51,6 +63,29 @@ export function MessageBubble({ message }: MessageBubbleProps): React.ReactEleme
       setTimeout(() => setCopied(false), 1600);
     }
   }, [message.text]);
+
+  const handleFork = React.useCallback(async () => {
+    if (!message.entryId || forking) return;
+    setForking(true);
+    try {
+      const res = await ipc.fork({ entryId: message.entryId });
+      if (res.ok) {
+        setActiveSession(res.data.record.id);
+        loadTranscript(res.data.record);
+        const state = await ipc.getState();
+        if (state.ok) setAgent(state.data);
+        const list = await ipc.listSessions();
+        if (list.ok) useAppStore.getState().setSessions(list.data);
+        if (res.data.selectedText) setComposerPrefill(res.data.selectedText);
+      }
+    } finally {
+      setForking(false);
+    }
+  }, [message.entryId, forking, setActiveSession, loadTranscript, setAgent, setComposerPrefill]);
+
+  const canFork = Boolean(isUser && message.entryId) && connection !== "running";
+  const showThinking = !isUser && !isError && Boolean(message.thinking);
+  const isStreamingTarget = streamingRun;
 
   return (
     <Box
@@ -77,9 +112,9 @@ export function MessageBubble({ message }: MessageBubbleProps): React.ReactEleme
             display: "grid",
             placeItems: "center",
             borderRadius: "10px",
-            color: "#86a9ff",
-            background: "linear-gradient(145deg, rgba(134,169,255,0.2), rgba(93,134,242,0.1))",
-            border: "1px solid rgba(134,169,255,0.28)",
+            color: "var(--omega-accent)",
+            background: "var(--omega-accent-soft)",
+            border: "1px solid var(--omega-border-strong)",
             fontSize: 14,
             fontWeight: 700,
             userSelect: "none",
@@ -91,12 +126,13 @@ export function MessageBubble({ message }: MessageBubbleProps): React.ReactEleme
       <Box sx={{ minWidth: 0, maxWidth: "min(78%, 720px)" }}>
         {!isUser ? (
           <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, mb: 0.25, px: 0.25 }}>
-            <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#8d99ad" }}>Omega</Typography>
+            <Typography sx={{ fontSize: 12, fontWeight: 600, color: "var(--omega-text-muted)" }}>Omega</Typography>
             {message.ts ? (
-              <Typography sx={{ fontSize: 11, color: "#5c6a82" }}>{formatTime(message.ts)}</Typography>
+              <Typography sx={{ fontSize: 11, color: "var(--omega-text-dim)" }}>{formatTime(message.ts)}</Typography>
             ) : null}
           </Box>
         ) : null}
+        {showThinking ? <ThinkingBlock text={message.thinking ?? ""} streaming={isStreamingTarget} /> : null}
         <Box
           sx={{
             minWidth: 0,
@@ -104,17 +140,17 @@ export function MessageBubble({ message }: MessageBubbleProps): React.ReactEleme
               ? {
                   order: 2,
                   color: "#fff",
-                  background: "linear-gradient(135deg, rgba(93,134,242,0.26), rgba(128,103,219,0.24))",
-                  border: "1px solid rgba(134,169,255,0.26)",
+                  background: "var(--omega-accent-strong)",
+                  border: "1px solid var(--omega-border-strong)",
                   borderRadius: "16px 4px 16px 16px",
                   px: 1.75,
                   py: 1.1,
                   whiteSpace: "pre-wrap",
                   overflowWrap: "anywhere",
-                  boxShadow: "0 6px 18px rgba(93,134,242,0.12)",
+                  boxShadow: "0 4px 14px var(--omega-shadow)",
                 }
               : {
-                  color: isError ? "#ffd4d9" : "#e7ebf3",
+                  color: isError ? "var(--omega-error-text)" : "var(--omega-text-soft)",
                 }),
           }}
         >
@@ -126,16 +162,25 @@ export function MessageBubble({ message }: MessageBubbleProps): React.ReactEleme
             <Markdown>{message.text}</Markdown>
           )}
         </Box>
-        {!isUser && !isError && message.text ? (
-          <Box className="msg-actions" sx={{ opacity: 0, transition: "opacity .15s ease", mt: 0.25, px: 0.25 }}>
+        {!isError && message.text ? (
+          <Box className="msg-actions" sx={{ opacity: 0, transition: "opacity .15s ease", mt: 0.25, px: 0.25, display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
             <Tooltip title={copied ? "已复制" : "复制消息"}>
-              <IconButton size="small" onClick={() => void handleCopy()} sx={{ color: "#697589", "&:hover": { color: "#a8c2ff" } }}>
+              <IconButton size="small" onClick={() => void handleCopy()} sx={{ color: "var(--omega-text-dim)", "&:hover": { color: "var(--omega-accent)" } }}>
                 {copied ? <CheckIcon sx={{ fontSize: 15 }} /> : <ContentCopyIcon sx={{ fontSize: 15 }} />}
               </IconButton>
             </Tooltip>
+            {canFork ? (
+              <Tooltip title={forking ? "创建中…" : "从此处 Fork 新会话"}>
+                <IconButton size="small" onClick={() => void handleFork()} disabled={forking} sx={{ color: "var(--omega-text-dim)", "&:hover": { color: "var(--omega-accent)" } }}>
+                  <CallSplitIcon sx={{ fontSize: 15 }} />
+                </IconButton>
+              </Tooltip>
+            ) : null}
           </Box>
         ) : null}
       </Box>
     </Box>
   );
 }
+
+export const MessageBubble = React.memo(MessageBubbleInner);

@@ -7,6 +7,7 @@ import {
   authStatusOf,
   createRuntime,
   findModel,
+  forkCandidatesOf,
   forgetSessionPath,
   listCommands,
   listModels,
@@ -14,6 +15,7 @@ import {
   piSessionsRoot,
   resolveSessionPath,
   sessionRecordOf,
+  sessionTreeOf,
   snapshotOf,
   streamToRenderer,
   THINKING_LEVELS,
@@ -186,11 +188,61 @@ async function createWindow() {
         .catch((error) => process.stdout.write(`[main] autotest prompt failed: ${error instanceof Error ? error.message : String(error)}\n`));
     }, 500);
     setTimeout(async () => {
+      if (process.env.OMEGA_DOMPROBE && win && !win.isDestroyed()) {
+        try {
+          const probe = await win.webContents.executeJavaScript(`(() => {
+            const pick = (sel, props) => {
+              const el = document.querySelector(sel);
+              if (!el) return { sel, missing: true };
+              const cs = getComputedStyle(el);
+              return Object.fromEntries(props.map((p) => [p, cs.getPropertyValue(p)]));
+            };
+            return JSON.stringify({
+              htmlClass: document.documentElement.className,
+              accentVar: getComputedStyle(document.documentElement).getPropertyValue("--omega-accent").trim(),
+              body: pick("body", ["color", "background-color"]),
+              title: pick('[data-omega-title]', ["color"]),
+              tab: pick(".MuiTab-root", ["color"]),
+              tabSelected: pick(".MuiTab-root.Mui-selected", ["color"]),
+              chip: pick(".MuiChip-root", ["color", "background-color"]),
+              toolbarBtn: pick(".MuiIconButton-root", ["color"]),
+            }, null, 1);
+          })()`);
+          process.stdout.write(`[main] domprobe ${probe}\n`);
+        } catch (error) {
+          process.stdout.write(`[main] domprobe failed: ${String(error)}\n`);
+        }
+      }
+      const forcedTheme = process.env.OMEGA_THEME;
+      if (forcedTheme && win && !win.isDestroyed()) {
+        try {
+          await win.webContents.executeJavaScript(
+            `localStorage.setItem("omega-theme", ${JSON.stringify(JSON.stringify(forcedTheme))})`,
+          );
+          await win.webContents.reload();
+          await new Promise((resolve) => setTimeout(resolve, 4000));
+        } catch (error) {
+          process.stdout.write(`[main] theme force failed: ${String(error)}\n`);
+        }
+      }
       const screenshotPath = process.env.OMEGA_SCREENSHOT;
       if (screenshotPath && win && !win.isDestroyed()) {
         try {
-          const image = await win.webContents.capturePage();
-          writeFileSync(screenshotPath, image.toPNG());
+          win.show();
+          let saved = false;
+          for (let attempt = 0; attempt < 4 && !saved; attempt += 1) {
+            try {
+              const image = await win.webContents.capturePage();
+              if (!image.isEmpty()) {
+                writeFileSync(screenshotPath, image.toPNG());
+                saved = true;
+              }
+            } catch {
+              /* capture can fail right after reload — retry */
+            }
+            if (!saved) await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+          if (!saved) throw new Error("capturePage failed after retries");
           process.stdout.write(`[main] screenshot saved -> ${screenshotPath}\n`);
         } catch (error) {
           process.stdout.write(`[main] screenshot failed: ${String(error)}\n`);
@@ -202,22 +254,33 @@ async function createWindow() {
   }
 }
 
-function promptInternal(text, behavior, images) {
-  const run = promptQueue.then(async () => {
-    const session = requireSession();
-    const options = behavior ? { streamingBehavior: behavior } : { streamingBehavior: "followUp" };
-    if (images) options.images = images;
-    await session.prompt(text, options);
-    // Auto-title: name the session after the first user message so the list
-    // stays readable without an extra LLM round-trip.
-    try {
-      if (!session.sessionName) {
-        const name = text.replace(/\s+/g, " ").trim().slice(0, 40);
-        if (name) session.setSessionName(name);
-      }
-    } catch {
-      /* best effort */
+function autoTitleFor(session, text) {
+  // Skip placeholder/slash payloads — they make useless titles.
+  if (!text || text.startsWith("/") || text === "（请查看图片）") return;
+  try {
+    if (!session.sessionName) {
+      const name = text.replace(/\s+/g, " ").trim().slice(0, 40);
+      if (name) session.setSessionName(name);
     }
+  } catch {
+    /* best effort */
+  }
+}
+
+function promptInternal(text, behavior, images) {
+  const session = requireSession();
+  const options = { streamingBehavior: behavior ?? "followUp" };
+  if (images) options.images = images;
+  // While a turn is streaming, prompt() only enqueues (steer/followUp) and
+  // resolves immediately — it must NOT sit in the serial promptQueue behind
+  // the running turn, or a steer would arrive after the turn already ended.
+  if (session.isStreaming) {
+    return session.prompt(text, options).then(() => autoTitleFor(session, text));
+  }
+  const run = promptQueue.then(async () => {
+    const queued = requireSession();
+    await queued.prompt(text, options);
+    autoTitleFor(queued, text);
   });
   promptQueue = run.catch(() => {});
   return run;
@@ -421,6 +484,73 @@ ipcMain.handle("omega:updateSettings", (event, req) => {
   }
 });
 
+ipcMain.handle("omega:clearQueue", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    const cleared = requireRuntime().session.clearQueue();
+    return okResult(cleared);
+  } catch (error) {
+    return errorResult("write_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:getSessionTree", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    return okResult(sessionTreeOf(requireRuntime()));
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle("omega:getForkCandidates", (event) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  try {
+    return okResult(forkCandidatesOf(requireRuntime()));
+  } catch (error) {
+    return errorResult("read_failed", error instanceof Error ? error.message : String(error));
+  }
+});
+
+function sessionBusyResult(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/current response|is streaming|wait/i.test(message)) {
+    return errorResult("session_busy", "生成中无法切换分支或会话，请先停止或等待完成");
+  }
+  return errorResult("write_failed", message);
+}
+
+ipcMain.handle("omega:fork", async (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  if (!req || typeof req.entryId !== "string" || !req.entryId.trim()) {
+    return errorResult("invalid_args", "entryId is required");
+  }
+  try {
+    const current = requireRuntime();
+    const result = await current.fork(req.entryId.trim(), { position: "before" });
+    if (result.cancelled) return errorResult("cancelled", "Fork cancelled");
+    bindStream();
+    activeCwd = runtime.cwd;
+    return okResult({ record: sessionRecordOf(runtime), selectedText: result.selectedText ?? "" });
+  } catch (error) {
+    return sessionBusyResult(error);
+  }
+});
+
+ipcMain.handle("omega:navigateTree", async (event, req) => {
+  if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
+  if (!req || typeof req.targetId !== "string" || !req.targetId.trim()) {
+    return errorResult("invalid_args", "targetId is required");
+  }
+  try {
+    await requireRuntime().session.navigateTree(req.targetId.trim());
+    bindStream();
+    return okResult(sessionRecordOf(runtime));
+  } catch (error) {
+    return sessionBusyResult(error);
+  }
+});
+
 ipcMain.handle("omega:authStatus", (event) => {
   if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
   try {
@@ -559,17 +689,7 @@ ipcMain.handle("omega:newSession", async (event, req) => {
     if (req?.title && typeof req.title === "string") {
       runtime.session.setSessionName(req.title.slice(0, 256));
     }
-    const record = sessionRecordOf(runtime);
-    try {
-      persistence.create(sessionsRoot(), {
-        title: record.title,
-        workspace: record.workspace,
-        projectKey: typeof req?.projectKey === "string" ? req.projectKey : undefined,
-      });
-    } catch {
-      /* cache is optional */
-    }
-    return okResult(record);
+    return okResult(sessionRecordOf(runtime));
   } catch (error) {
     return errorResult("write_failed", error instanceof Error ? error.message : String(error));
   }
@@ -579,40 +699,16 @@ ipcMain.handle("omega:loadSession", async (event, req) => {
   if (!senderAllowed(event)) return errorResult("forbidden", "Invalid renderer sender");
   if (!req?.sessionId) return errorResult("invalid_args", "sessionId is required");
   try {
+    // JSONL sessions are the only authority. The legacy JSON cache under
+    // userData was never updated after creation and pointed at stale
+    // workspaces — loading from it desynced the UI from the active runtime.
     const sessionPath = await resolveSessionPath(req.sessionId);
-    if (sessionPath) {
-      const cancelled = await requireRuntime().switchSession(sessionPath);
-      if (cancelled.cancelled) return errorResult("cancelled", "Session switch cancelled");
-      bindStream();
-      activeCwd = runtime.cwd;
-      return okResult(sessionRecordOf(runtime));
-    }
-    const record = persistence.load(sessionsRoot(), req.sessionId);
-    if (!record) return errorResult("not_found", "Session not found");
-    if (record.workspace) {
-      const workspace = resolve(record.workspace);
-      if (workspace !== requireRuntime().cwd) {
-        try {
-          unsubscribe?.();
-        } catch {
-          /* best effort */
-        }
-        unsubscribe = undefined;
-        try {
-          await runtime.dispose();
-        } catch (error) {
-          process.stderr.write(`[main] dispose failed: ${String(error)}\n`);
-        }
-        runtime = await createRuntime({ cwd: workspace, extensionsRoot: extensionsRootOf() });
-        runtime.setRebindSession(async () => {
-          bindStream();
-          activeCwd = runtime.cwd;
-        });
-        bindStream();
-        activeCwd = workspace;
-      }
-    }
-    return okResult(record);
+    if (!sessionPath) return errorResult("not_found", "Session not found");
+    const cancelled = await requireRuntime().switchSession(sessionPath);
+    if (cancelled.cancelled) return errorResult("cancelled", "Session switch cancelled");
+    bindStream();
+    activeCwd = runtime.cwd;
+    return okResult(sessionRecordOf(runtime));
   } catch (error) {
     return errorResult("read_failed", error instanceof Error ? error.message : String(error));
   }

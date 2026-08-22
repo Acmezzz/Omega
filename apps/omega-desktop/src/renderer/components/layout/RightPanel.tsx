@@ -31,13 +31,13 @@ export function RightPanel(): React.ReactElement {
         width: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "rgba(21,25,35,0.78)",
-        border: "1px solid #2b3444",
+        background: "var(--omega-panel-glass)",
+        border: "1px solid var(--omega-border)",
         borderRadius: "18px",
         overflow: "hidden",
       }}
     >
-      <Box sx={{ display: "flex", alignItems: "center", borderBottom: "1px solid #2b3444" }}>
+      <Box sx={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--omega-border)" }}>
         <Tabs
           value={rightTab}
           onChange={(_e, v) => setRightTab(v)}
@@ -48,7 +48,7 @@ export function RightPanel(): React.ReactElement {
           <Tab label="Diff" value="diff" />
         </Tabs>
         <Tooltip title="刷新扩展状态">
-          <IconButton size="small" onClick={() => void refresh()} sx={{ color: "#8d99ad", mr: 1 }} disabled={extensionLoading}>
+          <IconButton size="small" onClick={() => void refresh()} sx={{ color: "var(--omega-text-muted)", mr: 1 }} disabled={extensionLoading}>
             <RefreshIcon fontSize="small" />
           </IconButton>
         </Tooltip>

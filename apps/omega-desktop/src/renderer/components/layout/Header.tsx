@@ -17,10 +17,16 @@ import ExploreIcon from "@mui/icons-material/Explore";
 import StopIcon from "@mui/icons-material/Stop";
 import CompressIcon from "@mui/icons-material/Compress";
 import SettingsIcon from "@mui/icons-material/SettingsOutlined";
+import AccountTreeIcon from "@mui/icons-material/AccountTree";
+import LightModeIcon from "@mui/icons-material/LightMode";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
+import SettingsBrightnessIcon from "@mui/icons-material/SettingsBrightness";
 import { useAppStore } from "../../store/useAppStore";
 import { ipc } from "../../ipc/client";
 import type { ThinkingLevel } from "../../types/dto";
+import type { ThemeMode } from "../../theme/palettes";
 import { SettingsDialog } from "./SettingsDialog";
+import { ModelPicker } from "./ModelPicker";
 
 const CONNECTION_LABEL: Record<string, string> = {
   connecting: "连接中",
@@ -30,10 +36,10 @@ const CONNECTION_LABEL: Record<string, string> = {
 };
 
 const CONNECTION_COLOR: Record<string, string> = {
-  connecting: "#8d99ad",
-  ready: "#6bd59a",
-  running: "#86a9ff",
-  error: "#f17f8d",
+  connecting: "var(--omega-text-muted)",
+  ready: "var(--omega-success)",
+  running: "var(--omega-accent)",
+  error: "var(--omega-danger)",
 };
 
 const THINKING_LABEL: Record<ThinkingLevel, string> = {
@@ -44,6 +50,12 @@ const THINKING_LABEL: Record<ThinkingLevel, string> = {
   high: "思考 high",
   xhigh: "思考 xhigh",
   max: "思考 max",
+};
+
+const THEME_LABEL: Record<ThemeMode, string> = {
+  light: "浅色",
+  dark: "深色",
+  system: "跟随系统",
 };
 
 function formatUsage(percent: number | null, tokens: number | null, contextWindow: number | null): string {
@@ -60,27 +72,31 @@ export function Header(): React.ReactElement {
   const rightTab = useAppStore((s) => s.layout.rightTab);
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel);
   const setRightTab = useAppStore((s) => s.setRightTab);
+  const setTreeOpen = useAppStore((s) => s.setTreeOpen);
   const agent = useAppStore((s) => s.agent);
-  const models = useAppStore((s) => s.models);
   const auth = useAppStore((s) => s.auth);
   const compacting = useAppStore((s) => s.compacting);
   const thinkingActive = useAppStore((s) => s.thinkingActive);
   const retrying = useAppStore((s) => s.retrying);
   const setAgent = useAppStore((s) => s.setAgent);
   const setConnection = useAppStore((s) => s.setConnection);
+  const themeMode = useAppStore((s) => s.themeMode);
+  const setThemeMode = useAppStore((s) => s.setThemeMode);
 
-  const [modelAnchor, setModelAnchor] = React.useState<HTMLElement | null>(null);
   const [thinkingAnchor, setThinkingAnchor] = React.useState<HTMLElement | null>(null);
   const [authAnchor, setAuthAnchor] = React.useState<HTMLElement | null>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [modelAnchor, setModelAnchor] = React.useState<HTMLElement | null>(null);
   const [busy, setBusy] = React.useState(false);
 
-  const statusColor = bootstrapError ? CONNECTION_COLOR.error : CONNECTION_COLOR[connection];
+  const statusColor = bootstrapError ? "var(--omega-danger)" : CONNECTION_COLOR[connection];
   const running = connection === "running";
   const modelLabel = agent?.model ? `${agent.model.provider}/${agent.model.id}` : "未选模型";
   const usagePercent = agent?.usage.percent ?? null;
   const usageLabel = formatUsage(usagePercent, agent?.usage.tokens ?? null, agent?.usage.contextWindow ?? null);
   const thinkingLevels = agent?.thinkingLevels?.length ? agent.thinkingLevels : (["off", "minimal", "low", "medium", "high"] as ThinkingLevel[]);
+  const nextTheme: ThemeMode = themeMode === "light" ? "dark" : themeMode === "dark" ? "system" : "light";
+  const ThemeIcon = themeMode === "light" ? LightModeIcon : themeMode === "dark" ? DarkModeIcon : SettingsBrightnessIcon;
 
   const handleAbort = React.useCallback(async () => {
     setBusy(true);
@@ -102,15 +118,6 @@ export function Header(): React.ReactElement {
     }
   }, [setAgent]);
 
-  const handleSetModel = React.useCallback(
-    async (provider: string, modelId: string) => {
-      setModelAnchor(null);
-      const res = await ipc.setModel({ provider, modelId });
-      if (res.ok) setAgent(res.data);
-    },
-    [setAgent],
-  );
-
   const handleSetThinking = React.useCallback(
     async (level: ThinkingLevel) => {
       setThinkingAnchor(null);
@@ -125,13 +132,22 @@ export function Header(): React.ReactElement {
       position="static"
       elevation={0}
       sx={{
-        background: "rgba(21,25,35,0.78)",
-        border: "1px solid #2b3444",
+        background: "var(--omega-panel-glass)",
+        border: "1px solid var(--omega-border)",
         borderRadius: "18px",
         backdropFilter: "blur(6px)",
       }}
     >
-      <Toolbar sx={{ gap: 1, px: 2, minHeight: 64 }}>
+      <Toolbar
+        sx={{
+          gap: 1,
+          px: 2,
+          rowGap: 0.75,
+          minHeight: { xs: 56, md: 64 },
+          flexWrap: "wrap",
+          "& > *": { flexShrink: 0 },
+        }}
+      >
         <Box
           sx={{
             width: 38,
@@ -139,10 +155,9 @@ export function Header(): React.ReactElement {
             display: "grid",
             placeItems: "center",
             borderRadius: "12px",
-            border: "1px solid rgba(134,169,255,0.42)",
-            color: "#86a9ff",
-            background: "rgba(134,169,255,0.14)",
-            boxShadow: "0 0 26px rgba(93,134,242,0.14)",
+            border: "1px solid var(--omega-border-strong)",
+            color: "var(--omega-accent)",
+            background: "var(--omega-accent-soft)",
             fontSize: 23,
             fontWeight: 700,
           }}
@@ -151,7 +166,7 @@ export function Header(): React.ReactElement {
         </Box>
         <Box sx={{ minWidth: 0 }}>
           <Typography sx={{ fontWeight: 700, letterSpacing: "0.02em", lineHeight: 1.1 }}>Omega</Typography>
-          <Typography sx={{ color: "#8d99ad", fontSize: 12 }} noWrap>
+          <Typography sx={{ color: "var(--omega-text-muted)", fontSize: 12 }} noWrap>
             {agent?.sessionName || "Agent workspace"}
           </Typography>
         </Box>
@@ -162,23 +177,13 @@ export function Header(): React.ReactElement {
           size="small"
           label={modelLabel}
           onClick={(e) => setModelAnchor(e.currentTarget)}
-          sx={{ maxWidth: 220, cursor: "pointer", "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" } }}
+          sx={{
+            maxWidth: { xs: 150, sm: 200, md: 220 },
+            cursor: "pointer",
+            "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+          }}
         />
-        <Menu anchorEl={modelAnchor} open={Boolean(modelAnchor)} onClose={() => setModelAnchor(null)}>
-          {models.length === 0 ? (
-            <MenuItem disabled>无可用模型</MenuItem>
-          ) : (
-            models.map((model) => (
-              <MenuItem
-                key={`${model.provider}/${model.id}`}
-                selected={model.selected}
-                onClick={() => void handleSetModel(model.provider, model.id)}
-              >
-                {model.provider}/{model.id}
-              </MenuItem>
-            ))
-          )}
-        </Menu>
+        <ModelPicker anchor={modelAnchor} onClose={() => setModelAnchor(null)} />
 
         <Chip
           size="small"
@@ -196,12 +201,12 @@ export function Header(): React.ReactElement {
         </Menu>
 
         <Tooltip title="上下文用量">
-          <Box sx={{ width: 92, mr: 0.5 }}>
-            <Typography sx={{ fontSize: 10, color: "#8d99ad", lineHeight: 1.2 }}>{usageLabel}</Typography>
+          <Box sx={{ width: 92, mr: 0.5, display: { xs: "none", md: "block" } }}>
+            <Typography sx={{ fontSize: 10, color: "var(--omega-text-muted)", lineHeight: 1.2 }}>{usageLabel}</Typography>
             <LinearProgress
               variant="determinate"
               value={Math.max(0, Math.min(100, usagePercent ?? 0))}
-              sx={{ height: 4, borderRadius: 99, background: "#2b3444" }}
+              sx={{ height: 4, borderRadius: 99, background: "var(--omega-border)" }}
             />
           </Box>
         </Tooltip>
@@ -224,19 +229,37 @@ export function Header(): React.ReactElement {
         ) : (
           <Tooltip title="压缩上下文">
             <span>
-              <IconButton size="small" onClick={() => void handleCompact()} disabled={busy || compacting} sx={{ color: "#8d99ad" }}>
+              <IconButton size="small" onClick={() => void handleCompact()} disabled={busy || compacting} sx={{ color: "var(--omega-text-muted)" }}>
                 <CompressIcon fontSize="small" />
               </IconButton>
             </span>
           </Tooltip>
         )}
 
+        <Tooltip title={`主题：${THEME_LABEL[themeMode]}（点击切换）`}>
+          <IconButton
+            size="small"
+            onClick={(e) => setThemeMode(nextTheme, { x: e.clientX, y: e.clientY })}
+            sx={{ color: "var(--omega-text-muted)" }}
+          >
+            <ThemeIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+
+        <Tooltip title={running ? "生成中无法切换分支" : "会话分支树"}>
+          <span>
+            <IconButton size="small" onClick={() => setTreeOpen(true)} disabled={running} sx={{ color: "var(--omega-text-muted)" }}>
+              <AccountTreeIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
+
         <Chip
           size="small"
           label={auth?.label ?? "未登录"}
           variant={auth?.ready ? "filled" : "outlined"}
           onClick={(e) => setAuthAnchor(e.currentTarget)}
-          sx={{ cursor: "pointer" }}
+          sx={{ cursor: "pointer", display: { xs: "none", lg: "inline-flex" } }}
         />
         <Menu anchorEl={authAnchor} open={Boolean(authAnchor)} onClose={() => setAuthAnchor(null)}>
           {(auth?.providers ?? []).length === 0 ? (
@@ -250,14 +273,14 @@ export function Header(): React.ReactElement {
           )}
         </Menu>
 
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1, color: "#8d99ad", fontSize: 12 }}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, color: "var(--omega-text-muted)", fontSize: 12 }}>
           <Box
             sx={{
               width: 8,
               height: 8,
               borderRadius: 999,
               background: statusColor,
-              boxShadow: `0 0 0 4px ${statusColor}22`,
+              boxShadow: `0 0 0 4px color-mix(in srgb, ${statusColor} 18%, transparent)`,
             }}
           />
           <span>{bootstrapError ? "初始化失败" : CONNECTION_LABEL[connection]}</span>
@@ -271,7 +294,7 @@ export function Header(): React.ReactElement {
             variant={rightTab === "workflow" && rightOpen ? "filled" : "outlined"}
             color="primary"
             onClick={() => setRightTab("workflow")}
-            sx={{ cursor: "pointer" }}
+            sx={{ cursor: "pointer", display: { xs: "none", sm: "inline-flex" } }}
           />
         </Tooltip>
         <Tooltip title="探索 Scout">
@@ -282,19 +305,19 @@ export function Header(): React.ReactElement {
             variant={rightTab === "scout" && rightOpen ? "filled" : "outlined"}
             color="secondary"
             onClick={() => setRightTab("scout")}
-            sx={{ cursor: "pointer" }}
+            sx={{ cursor: "pointer", display: { xs: "none", sm: "inline-flex" } }}
           />
         </Tooltip>
 
         <Tooltip title="设置">
-          <IconButton size="small" onClick={() => setSettingsOpen(true)} sx={{ color: "#8d99ad" }}>
+          <IconButton size="small" onClick={() => setSettingsOpen(true)} sx={{ color: "var(--omega-text-muted)" }}>
             <SettingsIcon fontSize="small" />
           </IconButton>
         </Tooltip>
         <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
         <Tooltip title={rightOpen ? "收起右栏" : "展开右栏"}>
-          <IconButton size="small" onClick={toggleRightPanel} sx={{ color: "#8d99ad" }}>
+          <IconButton size="small" onClick={toggleRightPanel} sx={{ color: "var(--omega-text-muted)" }}>
             {rightOpen ? <KeyboardArrowRight /> : <KeyboardArrowLeft />}
           </IconButton>
         </Tooltip>

@@ -99,7 +99,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps): React.Re
             label={<Typography sx={{ fontSize: 13 }}>请求失败时自动重试</Typography>}
           />
         </Box>
-        <Typography sx={{ fontSize: 11, color: "#5c6a82" }}>
+        <Typography sx={{ fontSize: 11, color: "var(--omega-text-dim)" }}>
           设置通过 pi 的 SettingsManager 持久化，与 CLI 共享。
         </Typography>
       </DialogContent>

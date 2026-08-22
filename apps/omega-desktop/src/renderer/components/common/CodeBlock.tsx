@@ -24,13 +24,13 @@ export function CodeBlock({ language, className, children }: CodeBlockProps): Re
   return (
     <Box sx={{ position: "relative", my: 1 }}>
       {language ? (
-        <Box sx={{ position: "absolute", top: 8, right: 44, fontSize: 11, color: "#8d99ad", zIndex: 1 }}>{language}</Box>
+        <Box sx={{ position: "absolute", top: 8, right: 44, fontSize: 11, color: "var(--omega-text-muted)", zIndex: 1 }}>{language}</Box>
       ) : null}
       <Tooltip title="复制">
         <IconButton
           size="small"
           onClick={copy}
-          sx={{ position: "absolute", top: 4, right: 4, color: "#8d99ad", zIndex: 1 }}
+          sx={{ position: "absolute", top: 4, right: 4, color: "var(--omega-text-muted)", zIndex: 1 }}
         >
           <ContentCopyIcon fontSize="small" />
         </IconButton>

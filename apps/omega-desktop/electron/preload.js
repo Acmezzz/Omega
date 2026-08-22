@@ -143,6 +143,21 @@ contextBridge.exposeInMainWorld("omega", {
     if (typeof req?.autoRetry === "boolean") payload.autoRetry = req.autoRetry;
     return ipcRenderer.invoke("omega:updateSettings", payload);
   },
+  clearQueue: () => ipcRenderer.invoke("omega:clearQueue"),
+  getSessionTree: () => ipcRenderer.invoke("omega:getSessionTree"),
+  getForkCandidates: () => ipcRenderer.invoke("omega:getForkCandidates"),
+  fork: (req) => {
+    if (!req || typeof req.entryId !== "string" || !req.entryId.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "entryId is required" });
+    }
+    return ipcRenderer.invoke("omega:fork", { entryId: req.entryId });
+  },
+  navigateTree: (req) => {
+    if (!req || typeof req.targetId !== "string" || !req.targetId.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "targetId is required" });
+    }
+    return ipcRenderer.invoke("omega:navigateTree", { targetId: req.targetId });
+  },
   queryExtensionState: (req) => {
     const scope = typeof req?.scope === "string" ? req.scope : "all";
     if (!["all", "workflow", "scout"].includes(scope)) {

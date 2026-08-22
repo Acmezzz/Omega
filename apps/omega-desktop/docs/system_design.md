@@ -608,3 +608,13 @@ V1 把桌面做成了 Codex 风格三栏壳，但控制面绕开了 CLI：`creat
 Header：模型 chip、thinking chip、Stop、token/上下文条、压缩中、登录/本地可用。Composer 运行中显示 Stop；失败恢复文本。CommandPalette 从 `listCommands()` 填充。LeftNav 按 workspace 分组 JSONL 会话。Chat 工具卡插在对应 assistant 消息之后。
 
 安全红线不变：渲染器仍不得收到 thinking 原文、完整路径、工具参数/结果、backup fragment。
+
+### 7.5 V3：安全边界重定义（对齐 pi-web/pi-app/pi-agent-desktop）
+
+V3 起净化红线从"内容过滤"改为"进程隔离"，与三个参考项目一致（本地单用户应用）：
+
+- 保留：`contextIsolation`、`sandbox`、CSP（nonce，无 unsafe-inline/eval）、IPC `senderAllowed` 白名单、删除路径限定在 pi sessions 根目录内、工具载荷 64KB 截断（防 OOM，非内容过滤）
+- 放开：thinking 原文（折叠展示）、工具 args/结果原文、完整文件路径、bash 实时输出、排队消息文本进入渲染器
+- 事件仍是投影 DTO（`toRendererEvent` 白名单字段），不是透传 SDK 原始事件
+
+V3 其他：双主题（CSS 变量 + `html.dark` + system 跟随 + View Transition 切换）、IME 回车保护、队列可视化 + Recall（`clearQueue`）、输入历史、草稿、乐观发送去重、搜索式模型选择器（pending token 防竞态）、Fork（`runtime.fork`）+ 会话树 overlay（`getTree` 拍平 + `navigateTree`）、可拖拽三栏 + 右栏 icon rail。移植代码来源见 `THIRD-PARTY-NOTICES.md`。

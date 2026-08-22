@@ -22,8 +22,8 @@ const controlSx = {
   width: 44,
   height: 32,
   borderRadius: "8px",
-  color: "#8d99ad",
-  "&:hover": { color: "#f3f6fb", background: "rgba(255,255,255,0.08)" },
+  color: "var(--omega-text-muted)",
+  "&:hover": { color: "var(--omega-text)", background: "var(--omega-hover-fill)" },
 } as const;
 
 export function TitleBar(): React.ReactElement {
@@ -65,22 +65,22 @@ export function TitleBar(): React.ReactElement {
             display: "grid",
             placeItems: "center",
             borderRadius: "6px",
-            border: "1px solid rgba(134,169,255,0.4)",
-            color: "#86a9ff",
+            border: "1px solid var(--omega-border-strong)",
+            color: "var(--omega-accent)",
             fontSize: 11,
             fontWeight: 700,
           }}
         >
           Ω
         </Box>
-        <Typography sx={{ fontSize: 12.5, fontWeight: 700, letterSpacing: "0.06em", color: "#a8c2ff" }}>
+        <Typography sx={{ fontSize: 12.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--omega-accent)" }}>
           OMEGA DESKTOP
         </Typography>
       </Box>
       {workspaceLabel ? (
         <>
-          <Typography sx={{ fontSize: 12, color: "#5c6a82" }}>·</Typography>
-          <Typography sx={{ fontSize: 12, color: "#8d99ad" }} noWrap>
+          <Typography sx={{ fontSize: 12, color: "var(--omega-text-dim)" }}>·</Typography>
+          <Typography sx={{ fontSize: 12, color: "var(--omega-text-muted)" }} noWrap>
             {workspaceLabel}
           </Typography>
         </>
@@ -102,7 +102,7 @@ export function TitleBar(): React.ReactElement {
             size="small"
             disableRipple
             onClick={() => void ipc.closeWindow()}
-            sx={{ ...controlSx, "&:hover": { color: "#fff", background: "#f17f8d" } }}
+            sx={{ ...controlSx, "&:hover": { color: "#fff", background: "var(--omega-danger)" } }}
           >
             <CloseIcon sx={{ fontSize: 16 }} />
           </IconButton>

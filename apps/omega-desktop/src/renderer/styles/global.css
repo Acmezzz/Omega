@@ -8,15 +8,84 @@ body,
   height: 100%;
 }
 
+:root {
+  color-scheme: light;
+  --omega-bg: #f2f3f8;
+  --omega-bg-panel: #ffffff;
+  --omega-bg-soft: #f7f8fb;
+  --omega-bg-elevated: #ffffff;
+  --omega-bg-code: #f4f5f9;
+  --omega-border: #e2e5ec;
+  --omega-border-strong: #c9cedb;
+  --omega-text: #1a1e2a;
+  --omega-text-soft: #2a3040;
+  --omega-text-muted: #5c6474;
+  --omega-text-dim: #8b93a5;
+  --omega-accent: #4a6fe0;
+  --omega-accent-strong: #3f63d6;
+  --omega-accent-soft: rgba(74, 111, 224, 0.1);
+  --omega-selected: rgba(74, 111, 224, 0.14);
+  --omega-success: #189a5a;
+  --omega-warning: #b8860b;
+  --omega-danger: #d9506a;
+  --omega-error-text: #a12639;
+  --omega-panel-glass: rgba(255, 255, 255, 0.88);
+  --omega-composer-bg: rgba(255, 255, 255, 0.92);
+  --omega-hover-fill: rgba(0, 0, 0, 0.05);
+  --omega-inline-code-bg: rgba(74, 111, 224, 0.1);
+  --omega-inline-code-fg: #33509f;
+  --omega-scrollbar: #c9cedb;
+  --omega-scrollbar-hover: #aab2c5;
+  --omega-selection: rgba(74, 111, 224, 0.24);
+  --omega-shadow: rgba(30, 40, 70, 0.14);
+  --omega-glow-1: rgba(93, 134, 242, 0.1);
+  --omega-glow-2: rgba(128, 103, 219, 0.08);
+}
+
+html.dark {
+  color-scheme: dark;
+  --omega-bg: #0c0f15;
+  --omega-bg-panel: #151923;
+  --omega-bg-soft: #171d29;
+  --omega-bg-elevated: #1d2330;
+  --omega-bg-code: #0b0e14;
+  --omega-border: #2b3444;
+  --omega-border-strong: #3a465b;
+  --omega-text: #f3f6fb;
+  --omega-text-soft: #e7ebf3;
+  --omega-text-muted: #8d99ad;
+  --omega-text-dim: #5c6a82;
+  --omega-accent: #86a9ff;
+  --omega-accent-strong: #5d86f2;
+  --omega-accent-soft: rgba(134, 169, 255, 0.12);
+  --omega-selected: rgba(93, 134, 242, 0.16);
+  --omega-success: #6bd59a;
+  --omega-warning: #e8bd68;
+  --omega-danger: #f17f8d;
+  --omega-error-text: #ffd4d9;
+  --omega-panel-glass: rgba(21, 25, 35, 0.78);
+  --omega-composer-bg: rgba(29, 35, 48, 0.9);
+  --omega-hover-fill: rgba(255, 255, 255, 0.08);
+  --omega-inline-code-bg: rgba(134, 169, 255, 0.12);
+  --omega-inline-code-fg: #a8c2ff;
+  --omega-scrollbar: #333f55;
+  --omega-scrollbar-hover: #46587a;
+  --omega-selection: rgba(93, 134, 242, 0.32);
+  --omega-shadow: rgba(0, 0, 0, 0.45);
+  --omega-glow-1: rgba(27, 39, 64, 0.55);
+  --omega-glow-2: rgba(35, 29, 63, 0.5);
+}
+
 body {
   margin: 0;
-  color: #f3f6fb;
+  color: var(--omega-text);
   background:
-    radial-gradient(circle at 12% -4%, #1e2c4a 0, transparent 34%),
-    radial-gradient(circle at 88% 108%, #231d3f 0, transparent 38%),
-    #0c0f15;
+    radial-gradient(circle at 12% -4%, var(--omega-glow-1) 0, transparent 34%),
+    radial-gradient(circle at 88% 108%, var(--omega-glow-2) 0, transparent 38%),
+    var(--omega-bg);
   font: 14px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   overflow: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 * {
@@ -24,8 +93,21 @@ body {
 }
 
 ::selection {
-  background: rgba(93, 134, 242, 0.32);
-  color: #f3f6fb;
+  background: var(--omega-selection);
+  color: var(--omega-text);
+}
+
+/* View-transition theme switch (port of pi-web, MIT) */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 1;
+}
+::view-transition-new(root) {
+  z-index: 2;
 }
 
 /* Markdown rendering inside message bubbles */
@@ -47,7 +129,7 @@ body {
 .md-body h4 {
   margin: 1em 0 0.45em;
   line-height: 1.35;
-  color: #f3f6fb;
+  color: var(--omega-text);
 }
 .md-body h1 {
   font-size: 1.3em;
@@ -61,8 +143,8 @@ body {
 .md-body pre {
   margin: 0.6em 0;
   border-radius: 12px;
-  border: 1px solid #2b3444;
-  background: #0b0e14;
+  border: 1px solid var(--omega-border);
+  background: var(--omega-bg-code);
   padding: 12px 14px;
   overflow-x: auto;
 }
@@ -71,10 +153,10 @@ body {
   font-size: 12.5px;
 }
 .md-body :not(pre) > code {
-  background: rgba(134, 169, 255, 0.12);
+  background: var(--omega-inline-code-bg);
+  color: var(--omega-inline-code-fg);
   padding: 1px 5px;
   border-radius: 6px;
-  color: #a8c2ff;
 }
 .md-body ul,
 .md-body ol {
@@ -92,30 +174,30 @@ body {
 }
 .md-body th,
 .md-body td {
-  border: 1px solid #2b3444;
+  border: 1px solid var(--omega-border);
   padding: 6px 10px;
   text-align: left;
 }
 .md-body th {
-  background: rgba(134, 169, 255, 0.07);
+  background: var(--omega-accent-soft);
 }
 .md-body a {
-  color: #86a9ff;
+  color: var(--omega-accent);
 }
 .md-body blockquote {
   margin: 0.6em 0;
   padding-left: 12px;
-  border-left: 3px solid #3a465b;
-  color: #8d99ad;
+  border-left: 3px solid var(--omega-border);
+  color: var(--omega-text-muted);
 }
 .md-body hr {
   border: none;
-  border-top: 1px solid #2b3444;
+  border-top: 1px solid var(--omega-border);
   margin: 1em 0;
 }
 .md-body .hljs {
   background: transparent;
-  color: #dbe4f3;
+  color: var(--omega-text);
 }
 
 /* Streaming caret on the last assistant message */
@@ -123,12 +205,27 @@ body {
   content: "▍";
   display: inline-block;
   margin-left: 2px;
-  color: #86a9ff;
+  color: var(--omega-accent);
   animation: caret-blink 1s steps(2, start) infinite;
 }
 @keyframes caret-blink {
   to {
     visibility: hidden;
+  }
+}
+
+/* Thinking shimmer while streaming */
+.thinking-shimmer {
+  background: linear-gradient(90deg, var(--omega-text-dim) 25%, var(--omega-accent) 50%, var(--omega-text-dim) 75%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: thinking-slide 1.6s linear infinite;
+}
+@keyframes thinking-slide {
+  to {
+    background-position: -200% 0;
   }
 }
 
@@ -143,10 +240,10 @@ body {
 *::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
-  background: #333f55;
+  background: var(--omega-scrollbar);
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #46587a;
+  background: var(--omega-scrollbar-hover);
   background-clip: padding-box;
 }

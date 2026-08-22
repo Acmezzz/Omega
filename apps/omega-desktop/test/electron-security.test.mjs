@@ -21,22 +21,24 @@ test("bridge filters raw agent events and does not forward sensitive payloads", 
   assert.match(source, /toRendererEvent/);
   assert.match(source, /webContents\.isDestroyed/);
   assert.match(source, /event\.message\?\.id/);
+  // V3: full-fidelity content, but events are still projected (never the raw SDK event object).
   assert.doesNotMatch(source, /webContents\.send\("agent:event",\s*event\)/);
 });
 
-test("tool_execution_summary exposes only the file basename (no full path / args)", () => {
+test("tool_execution_summary carries full paths and raw payloads (V3 fidelity)", async () => {
   const events = toRendererEvent({
     type: "tool_execution_start",
     toolCallId: "call-1",
     toolName: "edit",
-    args: { path: "/abs/secret/project/src/very/deep/README.md", content: "leaked" },
+    args: { path: "/abs/secret/project/src/very/deep/README.md", content: "body" },
   });
   const summary = events.find((e) => e.type === "tool_execution_summary");
   assert.ok(summary, "produces a tool_execution_summary event");
-  assert.equal(summary.target, "README.md");
-  assert.notEqual(summary.target, "/abs/secret/project/src/very/deep/README.md");
-  // The raw arguments object must never be forwarded.
-  assert.equal(summary.args, undefined);
+  assert.equal(summary.target, "/abs/secret/project/src/very/deep/README.md");
+  assert.match(summary.argsJson, /README\.md/);
+  // Payloads are size-capped so a pathological result cannot OOM the renderer.
+  const source = await read("../electron/agent-bridge.js");
+  assert.match(source, /MAX_PAYLOAD_CHARS/);
 });
 
 test("message_start keeps IDs and strips raw sensitive event fields (thinking)", () => {
@@ -132,6 +134,11 @@ test("preload exposes a narrow validated bridge including omega:* methods", asyn
     "authStatus",
     "setSessionName",
     "updateSettings",
+    "clearQueue",
+    "getSessionTree",
+    "getForkCandidates",
+    "fork",
+    "navigateTree",
   ]) {
     assert.match(source, new RegExp(`ipcRenderer\\.invoke\\("omega:${method}"`), `${method} invoke present`);
   }

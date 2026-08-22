@@ -47,8 +47,8 @@ export function ApprovalBar({ selectedFiles, hasUntrackedSelected, onApplied }: 
   }, [selectedFiles, onApplied]);
 
   return (
-    <Box sx={{ position: "sticky", bottom: 0, mt: 1, p: 1.25, background: "#151923", border: "1px solid #2b3444", borderRadius: "12px", display: "flex", gap: 1 }}>
-      <Button variant="outlined" onClick={() => void accept()} disabled={busy} sx={{ textTransform: "none", color: "#6bd59a", borderColor: "#2b3444" }}>
+    <Box sx={{ position: "sticky", bottom: 0, mt: 1, p: 1.25, background: "var(--omega-bg-elevated)", border: "1px solid var(--omega-border)", borderRadius: "12px", display: "flex", gap: 1 }}>
+      <Button variant="outlined" onClick={() => void accept()} disabled={busy} sx={{ textTransform: "none", color: "var(--omega-success)", borderColor: "var(--omega-border)" }}>
         全部接受（保留改动）
       </Button>
       <Button
@@ -63,18 +63,18 @@ export function ApprovalBar({ selectedFiles, hasUntrackedSelected, onApplied }: 
 
       <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 1 }}>
-          <WarningAmberIcon sx={{ color: "#e8bd68" }} /> 确认还原改动？
+          <WarningAmberIcon sx={{ color: "var(--omega-warning)" }} /> 确认还原改动？
         </DialogTitle>
         <DialogContent>
-          <Typography sx={{ fontSize: 13, color: "#e7ebf3" }}>
+          <Typography sx={{ fontSize: 13, color: "var(--omega-text-soft)" }}>
             将还原选中的 {selectedFiles.length} 个文件。已纳入 git 的文件会回到上一次提交/暂存状态。
           </Typography>
           {hasUntrackedSelected ? (
-            <Typography sx={{ fontSize: 13, color: "#f17f8d", mt: 1, fontWeight: 600 }}>
+            <Typography sx={{ fontSize: 13, color: "var(--omega-danger)", mt: 1, fontWeight: 600 }}>
               ⚠️ 其中包含未跟踪的新文件，还原将通过 git clean 永久删除，此操作不可撤销。
             </Typography>
           ) : null}
-          <Box component="ul" sx={{ mt: 1, pl: 2, color: "#8d99ad", fontSize: 12, maxHeight: 160, overflowY: "auto" }}>
+          <Box component="ul" sx={{ mt: 1, pl: 2, color: "var(--omega-text-muted)", fontSize: 12, maxHeight: 160, overflowY: "auto" }}>
             {selectedFiles.map((f) => (
               <li key={f}>{f}</li>
             ))}

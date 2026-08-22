@@ -28,14 +28,14 @@ const STATUS_COLOR: Record<DiffFile["status"], "success" | "warning" | "error" |
 
 function HunkLine({ line }: { line: DiffFile["hunks"][number]["lines"][number] }) {
   const bg = line.type === "add" ? "rgba(107,213,154,0.12)" : line.type === "del" ? "rgba(241,127,141,0.12)" : "transparent";
-  const color = line.type === "add" ? "#6bd59a" : line.type === "del" ? "#f17f8d" : "#8d99ad";
+  const color = line.type === "add" ? "var(--omega-success)" : line.type === "del" ? "var(--omega-danger)" : "var(--omega-text-muted)";
   const prefix = line.type === "add" ? "+" : line.type === "del" ? "-" : " ";
   return (
     <Box component="div" sx={{ display: "flex", bgcolor: bg, fontFamily: "ui-monospace, monospace", fontSize: 12, whiteSpace: "pre" }}>
       <Box component="span" sx={{ color, flex: "0 0 auto", userSelect: "none", px: 0.5 }}>
         {prefix}
       </Box>
-      <Box component="span" sx={{ color: "#e7ebf3", flex: 1, overflowX: "auto" }}>
+      <Box component="span" sx={{ color: "var(--omega-text-soft)", flex: 1, overflowX: "auto" }}>
         {line.content}
       </Box>
     </Box>
@@ -52,19 +52,19 @@ function FileCard({
   onToggle: (path: string) => void;
 }) {
   return (
-    <Paper sx={{ p: 1.25, mb: 1, background: "#171d29", border: "1px solid #2b3444" }}>
+    <Paper sx={{ p: 1.25, mb: 1, background: "var(--omega-bg-soft)", border: "1px solid var(--omega-border)" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         <Checkbox size="small" checked={checked} onChange={() => onToggle(file.path)} sx={{ p: 0.25 }} />
-        <Typography sx={{ fontSize: 13, color: "#f3f6fb", fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <Typography sx={{ fontSize: 13, color: "var(--omega-text)", fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {file.path}
         </Typography>
         <Chip size="small" label={STATUS_LABEL[file.status]} color={STATUS_COLOR[file.status]} />
-        <Typography sx={{ fontSize: 11, color: "#6bd59a" }}>+{file.additions}</Typography>
-        <Typography sx={{ fontSize: 11, color: "#f17f8d" }}>-{file.deletions}</Typography>
+        <Typography sx={{ fontSize: 11, color: "var(--omega-success)" }}>+{file.additions}</Typography>
+        <Typography sx={{ fontSize: 11, color: "var(--omega-danger)" }}>-{file.deletions}</Typography>
       </Box>
       {file.hunks.map((hunk, i) => (
-        <Box key={i} sx={{ mt: 0.75, border: "1px solid #2b3444", borderRadius: "8px", overflow: "hidden" }}>
-          <Typography sx={{ fontSize: 11, color: "#8d99ad", px: 1, py: 0.25, background: "#0d1016" }}>{hunk.header}</Typography>
+        <Box key={i} sx={{ mt: 0.75, border: "1px solid var(--omega-border)", borderRadius: "8px", overflow: "hidden" }}>
+          <Typography sx={{ fontSize: 11, color: "var(--omega-text-muted)", px: 1, py: 0.25, background: "var(--omega-bg)" }}>{hunk.header}</Typography>
           <Box sx={{ px: 1, py: 0.5 }}>
             {hunk.lines.map((line, j) => (
               <HunkLine key={j} line={line} />
@@ -126,7 +126,7 @@ export function DiffViewer(): React.ReactElement {
 
   if (!diff.isGitRepo) {
     return (
-      <Typography sx={{ color: "#e8bd68", fontSize: 13, mt: 2 }}>
+      <Typography sx={{ color: "var(--omega-warning)", fontSize: 13, mt: 2 }}>
         当前工作区未纳入 git，无法生成 diff。请在 git 仓库内运行 Omega Desktop。
       </Typography>
     );
@@ -140,13 +140,13 @@ export function DiffViewer(): React.ReactElement {
   return (
     <Box>
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
-        <Typography sx={{ fontSize: 12, color: "#8d99ad" }}>仓库：{diff.repoRoot}</Typography>
+        <Typography sx={{ fontSize: 12, color: "var(--omega-text-muted)" }}>仓库：{diff.repoRoot}</Typography>
         <Button size="small" onClick={() => void refresh()} disabled={busy} sx={{ textTransform: "none" }}>
           {busy ? "刷新中…" : "刷新"}
         </Button>
       </Box>
       {diff.files.length === 0 ? (
-        <Typography sx={{ color: "#697589", fontSize: 13 }}>工作区没有未提交的改动。</Typography>
+        <Typography sx={{ color: "var(--omega-text-dim)", fontSize: 13 }}>工作区没有未提交的改动。</Typography>
       ) : (
         <>
           <FormControlLabel
@@ -158,7 +158,7 @@ export function DiffViewer(): React.ReactElement {
                 onChange={(e) => setSelected(e.target.checked ? new Set(diff.files.map((f) => f.path)) : new Set())}
               />
             }
-            label={<Typography sx={{ fontSize: 12, color: "#8d99ad" }}>全选（{diff.files.length} 个文件）</Typography>}
+            label={<Typography sx={{ fontSize: 12, color: "var(--omega-text-muted)" }}>全选（{diff.files.length} 个文件）</Typography>}
           />
           {diff.files.map((file) => (
             <FileCard key={file.path} file={file} checked={selected.has(file.path)} onToggle={toggle} />

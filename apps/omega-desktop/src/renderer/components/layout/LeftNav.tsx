@@ -16,14 +16,14 @@ export function LeftNav(): React.ReactElement {
         width: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "rgba(21,25,35,0.78)",
-        border: "1px solid #2b3444",
+        background: "var(--omega-panel-glass)",
+        border: "1px solid var(--omega-border)",
         borderRadius: "18px",
         overflow: "hidden",
       }}
     >
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", p: 2, pb: 1 }}>
-        <Typography sx={{ fontWeight: 700, fontSize: 13, color: "#8d99ad", letterSpacing: "0.04em" }}>
+        <Typography sx={{ fontWeight: 700, fontSize: 13, color: "var(--omega-text-muted)", letterSpacing: "0.04em" }}>
           会话
         </Typography>
         <Button
@@ -38,8 +38,8 @@ export function LeftNav(): React.ReactElement {
       <Box sx={{ flexGrow: 1, minHeight: 0, overflowY: "auto", px: 1.5, pb: 1.5 }}>
         <SessionList />
       </Box>
-      <Stack spacing={1} sx={{ p: 1.5, pt: 1, borderTop: "1px solid #2b3444" }}>
-        <Typography sx={{ fontSize: 11, color: "#697589" }}>
+      <Stack spacing={1} sx={{ p: 1.5, pt: 1, borderTop: "1px solid var(--omega-border)" }}>
+        <Typography sx={{ fontSize: 11, color: "var(--omega-text-dim)" }}>
           会话来自 CLI JSONL。扩展面板在右栏。
         </Typography>
       </Stack>

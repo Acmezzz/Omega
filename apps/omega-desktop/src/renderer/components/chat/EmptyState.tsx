@@ -17,9 +17,14 @@ export function EmptyState(): React.ReactElement {
     async (prompt: string) => {
       setConnection("running");
       try {
-        await ipc.prompt(prompt);
+        const res = await ipc.prompt(prompt);
+        if (!res.ok) {
+          useAppStore.getState().setComposerError(`${res.code}: ${res.message ?? "未知错误"}`);
+          useAppStore.getState().setConnection("ready");
+        }
       } catch (error) {
         console.error("prompt failed", error);
+        useAppStore.getState().setConnection("ready");
       }
     },
     [setConnection],
@@ -47,9 +52,9 @@ export function EmptyState(): React.ReactElement {
             display: "grid",
             placeItems: "center",
             borderRadius: "50%",
-            border: "1px solid rgba(134,169,255,0.4)",
+            border: "1px solid var(--omega-border-strong)",
             background: "radial-gradient(circle, rgba(134,169,255,0.22), transparent 65%)",
-            color: "#86a9ff",
+            color: "var(--omega-accent)",
             fontSize: 38,
             boxShadow: "0 0 42px rgba(93,134,242,0.15)",
           }}
@@ -59,13 +64,13 @@ export function EmptyState(): React.ReactElement {
         <Typography variant="h5" sx={{ mt: 2.5, fontWeight: 700, letterSpacing: "-0.02em" }}>
           开始与 Omega 协作
         </Typography>
-        <Typography sx={{ maxWidth: 500, mx: "auto", color: "#8d99ad" }}>
+        <Typography sx={{ maxWidth: 500, mx: "auto", color: "var(--omega-text-muted)" }}>
           描述一个问题、目标或需要探索的方向，Agent 会在当前工作区中协助你。
         </Typography>
-        <Typography sx={{ mt: 1.5, fontSize: 12, color: "#5c6a82" }}>
-          <kbd style={{ fontFamily: "inherit", background: "#1d2330", border: "1px solid #2b3444", borderRadius: 6, padding: "1px 6px" }}>Ctrl+K</kbd>
+        <Typography sx={{ mt: 1.5, fontSize: 12, color: "var(--omega-text-dim)" }}>
+          <kbd style={{ fontFamily: "inherit", background: "var(--omega-bg-elevated)", border: "1px solid var(--omega-border)", borderRadius: 6, padding: "1px 6px" }}>Ctrl+K</kbd>
           {" "}命令面板 ·{" "}
-          <kbd style={{ fontFamily: "inherit", background: "#1d2330", border: "1px solid #2b3444", borderRadius: 6, padding: "1px 6px" }}>Ctrl+Shift+N</kbd>
+          <kbd style={{ fontFamily: "inherit", background: "var(--omega-bg-elevated)", border: "1px solid var(--omega-border)", borderRadius: 6, padding: "1px 6px" }}>Ctrl+Shift+N</kbd>
           {" "}新建会话 · 生成中可发送转向指令或停止
         </Typography>
         <Box sx={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 1, mt: 2.5 }}>
@@ -75,7 +80,7 @@ export function EmptyState(): React.ReactElement {
               variant="outlined"
               size="small"
               onClick={() => void sendSuggestion(s)}
-              sx={{ borderRadius: "999px", textTransform: "none", color: "#8d99ad", borderColor: "#2b3444" }}
+              sx={{ borderRadius: "999px", textTransform: "none", color: "var(--omega-text-muted)", borderColor: "var(--omega-border)" }}
             >
               {s}
             </Button>

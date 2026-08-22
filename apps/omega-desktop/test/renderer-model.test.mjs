@@ -70,13 +70,16 @@ test("bridge source still wires the agent event channel", async () => {
   assert.match(source, /createAgentSessionRuntime/);
 });
 
-test("thinking deltas become thinking_status without any reasoning text", () => {
+test("thinking deltas are forwarded verbatim alongside thinking_status", () => {
   const events = toRendererEvent({
     type: "message_update",
-    assistantMessageEvent: { type: "thinking_delta", delta: "secret chain of thought" },
+    assistantMessageEvent: { type: "thinking_delta", delta: "chain of thought text" },
   });
-  assert.deepEqual(events, [{ type: "thinking_status", active: true }]);
-  assert.equal(JSON.stringify(events).includes("secret"), false);
+  const delta = events.find((e) => e.type === "message_update");
+  assert.ok(delta, "thinking_delta message_update is emitted");
+  assert.equal(delta.assistantMessageEvent.delta, "chain of thought text");
+  const status = events.find((e) => e.type === "thinking_status");
+  assert.deepEqual(status, { type: "thinking_status", active: true });
 });
 
 test("thinking_end marks thinking_status inactive", () => {
@@ -84,7 +87,24 @@ test("thinking_end marks thinking_status inactive", () => {
     type: "message_update",
     assistantMessageEvent: { type: "thinking_end" },
   });
-  assert.deepEqual(events, [{ type: "thinking_status", active: false }]);
+  const status = events.find((e) => e.type === "thinking_status");
+  assert.deepEqual(status, { type: "thinking_status", active: false });
+});
+
+test("tool events forward raw args, full paths, and results", () => {
+  const end = toRendererEvent({
+    type: "tool_execution_end",
+    toolCallId: "call-1",
+    toolName: "edit",
+    isError: false,
+    args: { path: "/abs/secret/project/src/README.md" },
+    result: { content: [{ type: "text", text: "the edited result" }] },
+  });
+  const summary = end.find((e) => e.type === "tool_execution_summary");
+  assert.ok(summary);
+  assert.equal(summary.target, "/abs/secret/project/src/README.md");
+  assert.equal(summary.resultText, "the edited result");
+  assert.match(summary.argsJson, /README\.md/);
 });
 
 test("compaction events expose status only", () => {
@@ -97,37 +117,84 @@ test("compaction events expose status only", () => {
     aborted: false,
   });
   assert.deepEqual(end, [{ type: "compaction_end", status: "done" }]);
-  assert.equal(JSON.stringify(end).includes("private compaction"), false);
 });
 
-test("queue_update forwards a count, not queued text", () => {
+test("queue_update forwards queued user texts for the queue UI", () => {
   const events = toRendererEvent({
     type: "queue_update",
-    steering: ["do not leak this"],
-    followUp: ["or this"],
+    steering: ["interrupt this"],
+    followUp: ["then this"],
   });
-  assert.deepEqual(events, [{ type: "queue_update", pendingCount: 2 }]);
+  assert.deepEqual(events, [
+    { type: "queue_update", steering: ["interrupt this"], followUp: ["then this"], pendingCount: 2 },
+  ]);
 });
 
-test("sanitizeTranscript drops thinking and tool payloads", () => {
-  const { messages, toolCards } = sanitizeTranscript([
-    { id: "u1", role: "user", content: "hello", timestamp: "2026-01-01T00:00:00.000Z" },
-    {
-      id: "a1",
-      role: "assistant",
-      content: [
-        { type: "thinking", text: "hidden reasoning" },
-        { type: "text", text: "visible" },
-        { type: "toolCall", id: "c1", name: "read", arguments: { path: "/abs/secret/README.md" } },
+test("bash_execution_update forwards live output", () => {
+  const events = toRendererEvent({ type: "bash_execution_update", delta: "line of output\n" });
+  assert.deepEqual(events, [{ type: "bash_execution_update", delta: "line of output\n" }]);
+});
+
+test("message_end carries the authoritative final text", () => {
+  const events = toRendererEvent({
+    type: "message_end",
+    message: { id: "assistant-9", role: "assistant", content: [{ type: "text", text: "final answer" }] },
+  });
+  assert.deepEqual(events, [{ type: "message_end", message: { role: "assistant", id: "assistant-9", text: "final answer" } }]);
+});
+
+test("tool_execution_end emits the summary before the raw event", () => {
+  const events = toRendererEvent({
+    type: "tool_execution_end",
+    toolCallId: "call-1",
+    toolName: "read",
+    isError: false,
+    args: { path: "/a/b.txt" },
+    result: { content: [{ type: "text", text: "body" }] },
+  });
+  assert.equal(events[0].type, "tool_execution_summary");
+  assert.equal(events[1].type, "tool_execution_end");
+});
+
+test("sanitizeTranscript keeps thinking, entry ids, and tool payloads", () => {
+  const fakeSession = {
+    sessionManager: {
+      getBranch: () => [
+        { type: "message", id: "entry-1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { id: "u1", role: "user", content: "hello" } },
+        {
+          type: "message",
+          id: "entry-2",
+          parentId: "entry-1",
+          timestamp: "2026-01-01T00:00:01.000Z",
+          message: {
+            id: "a1",
+            role: "assistant",
+            content: [
+              { type: "thinking", text: "visible reasoning" },
+              { type: "text", text: "answer" },
+              { type: "toolCall", id: "c1", name: "read", arguments: { path: "/abs/secret/README.md" } },
+            ],
+          },
+        },
+        {
+          type: "message",
+          id: "entry-3",
+          parentId: "entry-2",
+          timestamp: "2026-01-01T00:00:02.000Z",
+          message: { id: "r1", role: "toolResult", toolCallId: "c1", content: [{ type: "text", text: "file body" }] },
+        },
       ],
-      timestamp: "2026-01-01T00:00:01.000Z",
     },
-  ]);
-  assert.equal(messages[1].text, "visible");
-  assert.equal(JSON.stringify(messages).includes("hidden reasoning"), false);
-  assert.equal(toolCards[0].target, "README.md");
+  };
+  const { messages, toolCards } = sanitizeTranscript(fakeSession);
+  assert.equal(messages[0].entryId, "entry-1");
+  assert.equal(messages[1].entryId, "entry-2");
+  assert.equal(messages[1].thinking, "visible reasoning");
+  assert.equal(messages[1].text, "answer");
+  assert.equal(toolCards[0].target, "/abs/secret/README.md");
+  assert.match(toolCards[0].argsJson, /README\.md/);
+  assert.equal(toolCards[0].resultText, "file body");
   assert.equal(toolCards[0].afterMessageId, "a1");
-  assert.equal(toolCards[0].args, undefined);
 });
 
 test("command palette discovers commands instead of hardcoding the V1 list", async () => {
@@ -140,6 +207,32 @@ test("prompt channel supports steering interrupts while streaming", async () => 
   const main = await read("../electron/main.js");
   assert.match(main, /PROMPT_BEHAVIORS/);
   assert.match(main, /"steer"/);
+  // Streaming prompts bypass the serial queue so steer actually interrupts.
+  assert.match(main, /if \(session\.isStreaming\)/);
+  // Auto-title skips slash commands and image placeholders.
+  assert.match(main, /autoTitleFor/);
+  assert.match(main, /startsWith\("\/"\)/);
+});
+
+test("session_busy is reported when fork/navigate hit a running turn", async () => {
+  const main = await read("../electron/main.js");
+  assert.match(main, /sessionBusyResult/);
+  assert.match(main, /session_busy/);
+});
+
+test("composer sends are non-blocking with optimistic rollback guards", async () => {
+  const source = await read("../src/renderer/components/chat/Composer.tsx");
+  assert.match(source, /sendingRef/);
+  assert.match(source, /lastAgentStartAt/);
+  assert.match(source, /dropLastIfOptimistic/);
+  assert.match(source, /consumeOptimisticWith|optimistic-/);
+});
+
+test("panels no longer hardcode dark-only backgrounds", async () => {
+  const approval = await read("../src/renderer/components/panels/ApprovalBar.tsx");
+  const scout = await read("../src/renderer/components/panels/ScoutPanel.tsx");
+  assert.doesNotMatch(approval, /#151923/);
+  assert.doesNotMatch(scout, /#151923/);
 });
 
 test("agent tools include the pi search tools (grep/find/ls)", async () => {
@@ -186,4 +279,39 @@ test("settings dialog drives queue modes and auto toggles via IPC", async () => 
   assert.match(source, /followUpMode/);
   assert.match(source, /autoCompaction/);
   assert.match(source, /autoRetry/);
+});
+
+test("composer carries the pi-web IME composition guard", async () => {
+  const source = await read("../src/renderer/components/chat/Composer.tsx");
+  assert.match(source, /keyCode === 229/);
+  assert.match(source, /COMPOSITION_END_ENTER_GRACE_MS/);
+  assert.match(source, /onCompositionStart/);
+});
+
+test("composer visualizes the queue with a recall action", async () => {
+  const source = await read("../src/renderer/components/chat/Composer.tsx");
+  assert.match(source, /queuedMessages/);
+  assert.match(source, /clearQueue/);
+  assert.match(source, /QueuedRow/);
+});
+
+test("theme system has dual palettes, system follow, and view transition", async () => {
+  const palettes = await read("../src/renderer/theme/palettes.ts");
+  assert.match(palettes, /darkPalette/);
+  assert.match(palettes, /lightPalette/);
+  assert.match(palettes, /startViewTransition/);
+  const main = await read("../src/renderer/main.tsx");
+  assert.match(main, /initialResolvedMode/);
+  const header = await read("../src/renderer/components/layout/Header.tsx");
+  assert.match(header, /setThemeMode/);
+});
+
+test("fork, tree overlay, and model picker exist as surfaces", async () => {
+  const tree = await read("../src/renderer/components/layout/TreeOverlay.tsx");
+  assert.match(tree, /navigateTree/);
+  const picker = await read("../src/renderer/components/layout/ModelPicker.tsx");
+  assert.match(picker, /setModel/);
+  assert.match(picker, /modelSwitchToken/);
+  const bubble = await read("../src/renderer/components/chat/MessageBubble.tsx");
+  assert.match(bubble, /ipc\.fork/);
 });

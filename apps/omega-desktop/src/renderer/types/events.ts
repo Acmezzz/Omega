@@ -13,10 +13,22 @@ export interface MessageStartEvent {
   };
 }
 
+export interface MessageEndEvent {
+  type: "message_end";
+  message: {
+    role: "user" | "assistant" | "toolResult";
+    id?: string;
+    text?: string;
+  };
+}
+
 export interface MessageUpdateEvent {
   type: "message_update";
   assistantMessageEvent:
     | { type: "text_delta"; delta: string }
+    | { type: "thinking_start" }
+    | { type: "thinking_delta"; delta: string }
+    | { type: "thinking_end" }
     | { type: "toolcall_start" | "toolcall_end" | "tool_call"; toolName?: string };
 }
 
@@ -37,6 +49,7 @@ export interface ToolExecutionEndEvent {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  resultText?: string;
 }
 
 export type LifecycleEventType =
@@ -74,7 +87,14 @@ export interface ThinkingStatusEvent {
 
 export interface QueueUpdateEvent {
   type: "queue_update";
+  steering: string[];
+  followUp: string[];
   pendingCount: number;
+}
+
+export interface BashExecutionUpdateEvent {
+  type: "bash_execution_update";
+  delta: string;
 }
 
 export interface SessionInfoChangedEvent {
@@ -88,9 +108,8 @@ export interface AutoRetryEvent {
 }
 
 /**
- * Safe, read-only summary of a tool call. Crucially `target` is ONLY the file
- * basename — the main process strips the full path and never forwards raw tool
- * parameters or results. See system_design.md §3.2.
+ * Tool call card. V3 full-fidelity: `target` is the full path (or command),
+ * `argsJson`/`resultText` carry the raw payloads, size-capped in the bridge.
  */
 export interface ToolExecutionSummaryEvent {
   type: "tool_execution_summary";
@@ -102,10 +121,14 @@ export interface ToolExecutionSummaryEvent {
   status: "running" | "done" | "error";
   startedAt?: string;
   endedAt?: string;
+  argsJson?: string;
+  resultText?: string;
+  isError?: boolean;
 }
 
 export type SafeEvent =
   | MessageStartEvent
+  | MessageEndEvent
   | MessageUpdateEvent
   | ToolExecutionStartEvent
   | ToolExecutionUpdateEvent
@@ -118,7 +141,8 @@ export type SafeEvent =
   | ThinkingStatusEvent
   | QueueUpdateEvent
   | SessionInfoChangedEvent
-  | AutoRetryEvent;
+  | AutoRetryEvent
+  | BashExecutionUpdateEvent;
 
 export interface BootstrapError {
   message: string;

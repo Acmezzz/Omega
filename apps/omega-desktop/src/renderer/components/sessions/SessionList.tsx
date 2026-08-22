@@ -117,7 +117,7 @@ export function SessionList(): React.ReactElement {
 
   if (sessions.length === 0) {
     return (
-      <Box sx={{ p: 2, color: "#697589", fontSize: 12, textAlign: "center" }}>
+      <Box sx={{ p: 2, color: "var(--omega-text-dim)", fontSize: 12, textAlign: "center" }}>
         暂无会话，点击「新建」开始。
       </Box>
     );
@@ -143,16 +143,16 @@ export function SessionList(): React.ReactElement {
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">
-                <SearchIcon sx={{ fontSize: 15, color: "#697589" }} />
+                <SearchIcon sx={{ fontSize: 15, color: "var(--omega-text-dim)" }} />
               </InputAdornment>
             ),
-            sx: { fontSize: 12.5, borderRadius: "10px", background: "rgba(13,16,22,0.6)" },
+            sx: { fontSize: 12.5, borderRadius: "10px", background: "var(--omega-bg-soft)" },
           }}
         />
       </Box>
       {[...groups.entries()].map(([workspace, items]) => (
         <Box key={workspace} sx={{ mb: 1.25 }}>
-          <Typography sx={{ fontSize: 11, color: "#697589", px: 1, py: 0.5 }} noWrap>
+          <Typography sx={{ fontSize: 11, color: "var(--omega-text-dim)", px: 1, py: 0.5 }} noWrap>
             {workspace}
           </Typography>
           <List dense sx={{ p: 0 }}>
@@ -167,20 +167,20 @@ export function SessionList(): React.ReactElement {
                     borderRadius: "10px",
                     mb: 0.5,
                     px: 1.25,
-                    "&.Mui-selected": { background: "rgba(93,134,242,0.16)" },
-                    "&:hover": { background: "rgba(134,169,255,0.08)" },
+                    "&.Mui-selected": { background: "var(--omega-selected)" },
+                    "&:hover": { background: "var(--omega-hover-fill)" },
                     "& .row-actions": { opacity: 0 },
                     "&:hover .row-actions": { opacity: 1 },
                   }}
                 >
                   <ListItemText
                     primary={
-                      <Typography sx={{ fontSize: 13, fontWeight: active ? 700 : 500, color: "#f3f6fb" }} noWrap>
+                      <Typography sx={{ fontSize: 13, fontWeight: active ? 700 : 500, color: "var(--omega-text)" }} noWrap>
                         {session.title}
                       </Typography>
                     }
                     secondary={
-                      <Typography sx={{ fontSize: 11, color: "#8d99ad" }} component="span" noWrap>
+                      <Typography sx={{ fontSize: 11, color: "var(--omega-text-muted)" }} component="span" noWrap>
                         {relativeTime(session.updatedAt)}
                         {session.messageCount ? ` · ${session.messageCount} 条` : ""}
                       </Typography>
@@ -192,7 +192,7 @@ export function SessionList(): React.ReactElement {
                         <IconButton
                           size="small"
                           onClick={(e) => openRename(session.id, e)}
-                          sx={{ color: "#697589", "&:hover": { color: "#a8c2ff" } }}
+                          sx={{ color: "var(--omega-text-dim)", "&:hover": { color: "var(--omega-accent)" } }}
                         >
                           <EditIcon sx={{ fontSize: 15 }} />
                         </IconButton>
@@ -205,7 +205,7 @@ export function SessionList(): React.ReactElement {
                           e.stopPropagation();
                           setDeleting({ id: session.id, title: session.title });
                         }}
-                        sx={{ color: "#697589", "&:hover": { color: "#f17f8d" } }}
+                        sx={{ color: "var(--omega-text-dim)", "&:hover": { color: "var(--omega-danger)" } }}
                       >
                         <DeleteIcon sx={{ fontSize: 15 }} />
                       </IconButton>
@@ -244,7 +244,7 @@ export function SessionList(): React.ReactElement {
       <Dialog open={deleting !== null} onClose={() => setDeleting(null)} fullWidth maxWidth="xs">
         <DialogTitle sx={{ fontWeight: 700 }}>删除会话</DialogTitle>
         <DialogContent>
-          <Typography sx={{ fontSize: 13, color: "#8d99ad" }}>
+          <Typography sx={{ fontSize: 13, color: "var(--omega-text-muted)" }}>
             将永久删除会话「{deleting?.title}」的 JSONL 记录，此操作不可恢复。确定删除？
           </Typography>
         </DialogContent>

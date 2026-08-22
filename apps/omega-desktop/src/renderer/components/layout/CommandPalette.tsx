@@ -55,9 +55,14 @@ export function CommandPalette(): React.ReactElement {
       }
       setConnection("running");
       try {
-        await ipc.prompt(commandLabel(command));
+        const res = await ipc.prompt(commandLabel(command));
+        if (!res.ok) {
+          useAppStore.getState().setComposerError(`${res.code}: ${res.message ?? "未知错误"}`);
+          useAppStore.getState().setConnection("ready");
+        }
       } catch (error) {
         console.error("command failed", error);
+        useAppStore.getState().setConnection("ready");
       }
     },
     [setOpen, setConnection, setAgent],
@@ -83,13 +88,13 @@ export function CommandPalette(): React.ReactElement {
         {filtered.map((command) => (
           <ListItemButton key={`${command.source}:${command.name}`} onClick={() => void run(command)} sx={{ borderRadius: "10px", mb: 0.5 }}>
             <ListItemText
-              primary={<span style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, color: "#86a9ff" }}>{commandLabel(command)}</span>}
-              secondary={<span style={{ fontSize: 12, color: "#8d99ad" }}>{command.description || command.source}</span>}
+              primary={<span style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, color: "var(--omega-accent)" }}>{commandLabel(command)}</span>}
+              secondary={<span style={{ fontSize: 12, color: "var(--omega-text-muted)" }}>{command.description || command.source}</span>}
             />
           </ListItemButton>
         ))}
         {filtered.length === 0 ? (
-          <ListItemText primary={<span style={{ fontSize: 12, color: "#697589" }}>无匹配命令</span>} />
+          <ListItemText primary={<span style={{ fontSize: 12, color: "var(--omega-text-dim)" }}>无匹配命令</span>} />
         ) : null}
       </List>
     </Dialog>

@@ -23,6 +23,8 @@ import type {
   AuthStatus,
   UsageSnapshot,
 } from "../types/dto";
+import type { Palette, ThemeMode } from "../theme/palettes";
+import { applyModeWithTransition, paletteForMode } from "../theme/palettes";
 import type {
   ToolExecutionSummaryEvent,
   MessageStartEvent,
@@ -42,23 +44,43 @@ export interface ToolCardState {
   status: "running" | "done" | "error";
   startedAt?: string;
   endedAt?: string;
+  argsJson?: string;
+  resultText?: string;
+  isError?: boolean;
   afterMessageId?: string;
+}
+
+export interface QueuedMessages {
+  steering: string[];
+  followUp: string[];
 }
 
 export interface LayoutState {
   rightPanelOpen: boolean;
   rightTab: "workflow" | "scout" | "diff";
   commandPaletteOpen: boolean;
+  treeOpen: boolean;
 }
 
 export interface AppState {
   connection: ConnectionState;
   bootstrapError: string | null;
 
+  themeMode: ThemeMode;
+  resolvedMode: "light" | "dark";
+  setThemeMode: (mode: ThemeMode, origin?: { x: number; y: number }) => void;
+
   sessions: SessionSummary[];
   activeSessionId: string | null;
   messages: SessionMessage[];
   toolCards: ToolCardState[];
+  queuedMessages: QueuedMessages;
+  /** Content signature of the pending optimistic user bubble (id `optimistic-*`). */
+  optimisticKey: string | null;
+  /** Assistant message id of the in-flight streaming run (deltas target it). */
+  streamingAssistantId: string | null;
+  /** Epoch of the last agent_start — lets late prompt failures skip rollback. */
+  lastAgentStartAt: number;
 
   agent: AgentStateSnapshot | null;
   models: ModelInfo[];
@@ -67,8 +89,9 @@ export interface AppState {
   thinkingActive: boolean;
   compacting: boolean;
   retrying: boolean;
-  pendingCount: number;
   composerError: string | null;
+  composerPrefill: string | null;
+  bashTail: string;
 
   extensionState: ExtensionStateBundle;
   extensionLoading: boolean;
@@ -83,6 +106,7 @@ export interface AppState {
   setConnection: (state: ConnectionState) => void;
   setBootstrapError: (message: string | null) => void;
   setComposerError: (message: string | null) => void;
+  setComposerPrefill: (text: string | null) => void;
 
   setSessions: (sessions: SessionSummary[]) => void;
   setActiveSession: (id: string | null) => void;
@@ -91,9 +115,18 @@ export interface AppState {
 
   appendMessage: (message: SessionMessage) => void;
   appendDelta: (messageId: string, delta: string) => void;
+  appendThinkingDelta: (delta: string) => void;
+  /** Replace-or-consume the trailing optimistic bubble with the delivered user message. */
+  consumeOptimisticWith: (delivered: SessionMessage) => void;
+  dropLastIfOptimistic: (key: string) => void;
+  setStreamingAssistantId: (id: string | null) => void;
+  /** Ensure a streaming assistant bubble exists for this run; returns its id. */
+  ensureStreamingAssistant: () => string;
 
   upsertToolCard: (summary: ToolExecutionSummaryEvent) => void;
+  appendBashTail: (delta: string) => void;
 
+  setQueuedMessages: (queued: QueuedMessages) => void;
   setAgent: (agent: AgentStateSnapshot | null) => void;
   patchAgent: (patch: Partial<AgentStateSnapshot>) => void;
   setModels: (models: ModelInfo[]) => void;
@@ -102,7 +135,6 @@ export interface AppState {
   setThinkingActive: (active: boolean) => void;
   setCompacting: (compacting: boolean) => void;
   setRetrying: (retrying: boolean) => void;
-  setPendingCount: (pendingCount: number) => void;
 
   setExtensionState: (bundle: ExtensionStateBundle) => void;
   setExtensionLoading: (loading: boolean) => void;
@@ -113,6 +145,7 @@ export interface AppState {
   toggleRightPanel: () => void;
   setRightTab: (tab: LayoutState["rightTab"]) => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setTreeOpen: (open: boolean) => void;
 }
 
 const EMPTY_USAGE: UsageSnapshot = {
@@ -125,14 +158,32 @@ const EMPTY_USAGE: UsageSnapshot = {
   cost: 0,
 };
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   connection: "connecting",
   bootstrapError: null,
+
+  themeMode: "system",
+  resolvedMode: "dark",
+  setThemeMode: (mode, origin) => {
+    const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+    const resolved = mode === "system" ? (systemDark ? "dark" : "light") : mode;
+    try {
+      localStorage.setItem("omega-theme", JSON.stringify(mode));
+    } catch {
+      /* best effort */
+    }
+    applyModeWithTransition(resolved, origin);
+    set({ themeMode: mode, resolvedMode: resolved });
+  },
 
   sessions: [],
   activeSessionId: null,
   messages: [],
   toolCards: [],
+  queuedMessages: { steering: [], followUp: [] },
+  optimisticKey: null,
+  streamingAssistantId: null,
+  lastAgentStartAt: 0,
 
   agent: null,
   models: [],
@@ -141,8 +192,9 @@ export const useAppStore = create<AppState>((set) => ({
   thinkingActive: false,
   compacting: false,
   retrying: false,
-  pendingCount: 0,
   composerError: null,
+  composerPrefill: null,
+  bashTail: "",
 
   extensionState: {},
   extensionLoading: false,
@@ -156,11 +208,13 @@ export const useAppStore = create<AppState>((set) => ({
     rightPanelOpen: true,
     rightTab: "workflow",
     commandPaletteOpen: false,
+    treeOpen: false,
   },
 
   setConnection: (connection) => set({ connection }),
   setBootstrapError: (bootstrapError) => set({ bootstrapError }),
   setComposerError: (composerError) => set({ composerError }),
+  setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
 
   setSessions: (sessions) => set({ sessions }),
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
@@ -173,22 +227,33 @@ export const useAppStore = create<AppState>((set) => ({
         toolName: card.toolName,
         kind: (card.kind as ToolCardState["kind"]) ?? "other",
         target: card.target,
+        argsJson: card.argsJson,
+        resultText: card.resultText,
+        isError: card.isError,
         status: card.status === "error" ? "error" : "done",
         afterMessageId: card.afterMessageId,
       })),
+      queuedMessages: { steering: [], followUp: [] },
+      optimisticKey: null,
+      streamingAssistantId: null,
       thinkingActive: false,
       compacting: false,
       retrying: false,
       composerError: null,
+      bashTail: "",
     }),
   clearConversation: () =>
     set({
       messages: [],
       toolCards: [],
+      queuedMessages: { steering: [], followUp: [] },
+      optimisticKey: null,
+      streamingAssistantId: null,
       thinkingActive: false,
       compacting: false,
       retrying: false,
       composerError: null,
+      bashTail: "",
     }),
 
   appendMessage: (message) =>
@@ -201,6 +266,62 @@ export const useAppStore = create<AppState>((set) => ({
           : message,
       ),
     })),
+  appendThinkingDelta: (delta) =>
+    set((state) => {
+      for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+        if (state.messages[i].role === "assistant") {
+          const message = state.messages[i];
+          const next = { ...message, thinking: (message.thinking ?? "") + delta };
+          const messages = [...state.messages];
+          messages[i] = next;
+          return { messages };
+        }
+      }
+      return {};
+    }),
+  consumeOptimisticWith: (delivered) =>
+    set((state) => {
+      const last = state.messages[state.messages.length - 1];
+      if (state.optimisticKey && last?.role === "user" && last.id.startsWith("optimistic-")) {
+        const messages = [...state.messages];
+        // Same content: keep the optimistic bubble as-is. Different content
+        // (slash expansion, image placeholder): replace with the authoritative
+        // version instead of duplicating.
+        messages[messages.length - 1] =
+          last.text === delivered.text ? { ...last, id: delivered.id || last.id, entryId: delivered.entryId } : delivered;
+        return { messages, optimisticKey: null };
+      }
+      return { messages: [...state.messages, delivered], optimisticKey: null };
+    }),
+  dropLastIfOptimistic: (key) =>
+    set((state) => {
+      if (state.optimisticKey !== key) return {};
+      const last = state.messages[state.messages.length - 1];
+      if (!last || last.role !== "user" || !last.id.startsWith("optimistic-")) return { optimisticKey: null };
+      return {
+        messages: state.messages.slice(0, -1),
+        optimisticKey: null,
+      };
+    }),
+  setStreamingAssistantId: (streamingAssistantId) => set({ streamingAssistantId }),
+  ensureStreamingAssistant: () => {
+    const state = get();
+    if (state.streamingAssistantId) {
+      const exists = state.messages.some((message) => message.id === state.streamingAssistantId);
+      if (exists) return state.streamingAssistantId;
+    }
+    const message: SessionMessage = {
+      role: "assistant",
+      id: `streaming-${Date.now()}`,
+      text: "",
+      ts: new Date().toISOString(),
+    };
+    set((current) => ({
+      messages: [...current.messages, message],
+      streamingAssistantId: message.id,
+    }));
+    return message.id;
+  },
 
   upsertToolCard: (summary) =>
     set((state) => {
@@ -213,12 +334,15 @@ export const useAppStore = create<AppState>((set) => ({
               ? {
                   ...card,
                   toolName: summary.toolName,
-                  kind: summary.kind,
+                  kind: (summary.kind ?? card.kind) as ToolCardState["kind"],
                   target: summary.target ?? card.target,
                   op: summary.op ?? card.op,
                   status: summary.status,
                   startedAt: card.startedAt ?? summary.startedAt,
                   endedAt: summary.endedAt ?? card.endedAt,
+                  argsJson: summary.argsJson ?? card.argsJson,
+                  resultText: summary.resultText ?? card.resultText,
+                  isError: summary.isError ?? card.isError,
                   afterMessageId: card.afterMessageId ?? lastAssistant?.id,
                 }
               : card,
@@ -237,12 +361,22 @@ export const useAppStore = create<AppState>((set) => ({
             status: summary.status,
             startedAt: summary.startedAt,
             endedAt: summary.endedAt,
+            argsJson: summary.argsJson,
+            resultText: summary.resultText,
+            isError: summary.isError,
             afterMessageId: lastAssistant?.id,
           },
         ],
       };
     }),
 
+  appendBashTail: (delta) =>
+    set((state) => {
+      const next = (state.bashTail + delta).slice(-4_000);
+      return { bashTail: next };
+    }),
+
+  setQueuedMessages: (queuedMessages) => set({ queuedMessages }),
   setAgent: (agent) => set({ agent, compacting: agent?.isCompacting ?? false }),
   patchAgent: (patch) =>
     set((state) => ({
@@ -256,7 +390,6 @@ export const useAppStore = create<AppState>((set) => ({
   setThinkingActive: (thinkingActive) => set({ thinkingActive }),
   setCompacting: (compacting) => set({ compacting }),
   setRetrying: (retrying) => set({ retrying }),
-  setPendingCount: (pendingCount) => set({ pendingCount }),
 
   setExtensionState: (extensionState) => set({ extensionState }),
   setExtensionLoading: (extensionLoading) => set({ extensionLoading }),
@@ -280,7 +413,17 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       layout: { ...state.layout, commandPaletteOpen },
     })),
+  setTreeOpen: (treeOpen) =>
+    set((state) => ({
+      layout: { ...state.layout, treeOpen },
+    })),
 }));
+
+/** Active palette derived from the resolved mode (re-renders on theme change). */
+export function usePalette(): Palette {
+  const resolvedMode = useAppStore((s) => s.resolvedMode);
+  return paletteForMode(resolvedMode);
+}
 
 /** Helper used by the event subscriber to fold a `message_start` into state. */
 export function applyMessageStart(
@@ -347,6 +490,8 @@ export function applyToolEnd(
     toolName: event.toolName ?? "tool",
     kind: "other",
     status: event.isError ? "error" : "done",
+    isError: event.isError,
+    resultText: event.resultText,
     endedAt: new Date().toISOString(),
   });
 }

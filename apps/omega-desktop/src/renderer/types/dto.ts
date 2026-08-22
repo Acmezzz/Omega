@@ -274,6 +274,8 @@ export interface SessionMessage {
   id: string;
   text: string;
   ts: string;
+  entryId?: string;
+  thinking?: string;
 }
 
 export interface ToolCardSummary {
@@ -282,6 +284,9 @@ export interface ToolCardSummary {
   status: string;
   kind?: string;
   target?: string;
+  argsJson?: string;
+  resultText?: string;
+  isError?: boolean;
   afterMessageId?: string;
 }
 
@@ -356,6 +361,27 @@ export interface AuthStatus {
   providers: AuthProviderStatus[];
   label: string;
   ready: boolean;
+}
+
+export interface TreeNodeRow {
+  id: string;
+  parentId: string | null;
+  depth: number;
+  role: string;
+  preview: string;
+  isLeaf: boolean;
+  label?: string;
+}
+
+export interface SessionTree {
+  nodes: TreeNodeRow[];
+  activePath: string[];
+  leafId: string | null;
+}
+
+export interface ForkCandidate {
+  entryId: string;
+  text: string;
 }
 
 // ===== extension state aggregation (single pull) =====
