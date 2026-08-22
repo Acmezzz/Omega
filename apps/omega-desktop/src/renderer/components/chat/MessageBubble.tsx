@@ -92,7 +92,7 @@ function MessageBubbleInner({ message, streamingRun }: MessageBubbleProps): Reac
       sx={{
         display: "flex",
         gap: 1.5,
-        mb: 2.5,
+        mb: 2.75,
         justifyContent: isUser ? "flex-end" : "flex-start",
         animation: "rise .22s ease both",
         "@keyframes rise": {
@@ -102,36 +102,7 @@ function MessageBubbleInner({ message, streamingRun }: MessageBubbleProps): Reac
         "&:hover .msg-actions": { opacity: 1 },
       }}
     >
-      {!isUser ? (
-        <Box
-          sx={{
-            flex: "0 0 auto",
-            mt: 0.25,
-            width: 30,
-            height: 30,
-            display: "grid",
-            placeItems: "center",
-            borderRadius: "10px",
-            color: "var(--omega-accent)",
-            background: "var(--omega-accent-soft)",
-            border: "1px solid var(--omega-border-strong)",
-            fontSize: 14,
-            fontWeight: 700,
-            userSelect: "none",
-          }}
-        >
-          Ω
-        </Box>
-      ) : null}
-      <Box sx={{ minWidth: 0, maxWidth: "min(78%, 720px)" }}>
-        {!isUser ? (
-          <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, mb: 0.25, px: 0.25 }}>
-            <Typography sx={{ fontSize: 12, fontWeight: 600, color: "var(--omega-text-muted)" }}>Omega</Typography>
-            {message.ts ? (
-              <Typography sx={{ fontSize: 11, color: "var(--omega-text-dim)" }}>{formatTime(message.ts)}</Typography>
-            ) : null}
-          </Box>
-        ) : null}
+      <Box sx={{ minWidth: 0, maxWidth: isUser ? "min(78%, 720px)" : "100%" }}>
         {showThinking ? (
           <ThinkingBlock
             text={message.thinking ?? ""}
@@ -154,7 +125,7 @@ function MessageBubbleInner({ message, streamingRun }: MessageBubbleProps): Reac
                   py: 1.1,
                   whiteSpace: "pre-wrap",
                   overflowWrap: "anywhere",
-                  boxShadow: "0 4px 14px var(--omega-shadow)",
+                  boxShadow: "0 2px 8px var(--omega-shadow)",
                 }
               : {
                   color: isError ? "var(--omega-error-text)" : "var(--omega-text-soft)",

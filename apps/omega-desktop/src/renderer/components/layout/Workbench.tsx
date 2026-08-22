@@ -24,14 +24,14 @@ function loadWidths(): { left: number; right: number } {
     if (raw) {
       const parsed = JSON.parse(raw) as { left?: number; right?: number };
       return {
-        left: Math.min(MAX_SIDEBAR_PX, Math.max(MIN_SIDEBAR_PX, parsed.left ?? 248)),
+        left: Math.min(MAX_SIDEBAR_PX, Math.max(MIN_SIDEBAR_PX, parsed.left ?? 260)),
         right: Math.min(MAX_RIGHT_PX, Math.max(MIN_RIGHT_PX, parsed.right ?? 440)),
       };
     }
   } catch {
     /* defaults */
   }
-  return { left: 248, right: 440 };
+  return { left: 260, right: 440 };
 }
 
 /**
@@ -119,9 +119,8 @@ export function Workbench(): React.ReactElement {
         gridTemplateRows: "auto auto 1fr",
         gridTemplateColumns: `${leftCol} minmax(0,1fr) ${rightCol}`,
         height: "100vh",
-        gap: 1,
-        p: 1,
-        pt: 0,
+        gap: 0,
+        p: 0,
         transition: dragging ? "none" : "grid-template-columns 0.28s cubic-bezier(0.22, 1, 0.36, 1)",
       }}
     >
@@ -138,11 +137,12 @@ export function Workbench(): React.ReactElement {
             right: 0,
             top: 0,
             bottom: 0,
-            width: 7,
+            width: 5,
             cursor: "col-resize",
             zIndex: 5,
             touchAction: "none",
             "&:hover": { background: "var(--omega-accent-soft)" },
+            "&:active": { background: "var(--omega-accent)" },
           }}
         />
       </Box>
@@ -161,16 +161,13 @@ export function Workbench(): React.ReactElement {
               alignItems: "center",
               gap: 1,
               pt: 2,
-                background: "var(--omega-panel-glass)",
-              border: "1px solid var(--omega-border)",
-              borderRadius: "18px",
             }}
           >
             <Tooltip title="工作流">
               <IconButton
                 size="small"
                 onClick={() => setRightTab("workflow")}
-                sx={{ color: rightTab === "workflow" ? "var(--omega-accent)" : "var(--omega-text-muted)" }}
+                sx={{ color: rightTab === "workflow" ? "var(--omega-accent)" : "var(--omega-text-dim)" }}
               >
                 <AssessmentIcon fontSize="small" />
               </IconButton>
@@ -179,7 +176,7 @@ export function Workbench(): React.ReactElement {
               <IconButton
                 size="small"
                 onClick={() => setRightTab("scout")}
-                sx={{ color: rightTab === "scout" ? "var(--omega-accent)" : "var(--omega-text-muted)" }}
+                sx={{ color: rightTab === "scout" ? "var(--omega-accent)" : "var(--omega-text-dim)" }}
               >
                 <ExploreIcon fontSize="small" />
               </IconButton>
@@ -188,7 +185,7 @@ export function Workbench(): React.ReactElement {
               <IconButton
                 size="small"
                 onClick={() => setRightTab("diff")}
-                sx={{ color: rightTab === "diff" ? "var(--omega-accent)" : "var(--omega-text-muted)" }}
+                sx={{ color: rightTab === "diff" ? "var(--omega-accent)" : "var(--omega-text-dim)" }}
               >
                 <DifferenceIcon fontSize="small" />
               </IconButton>
@@ -203,11 +200,12 @@ export function Workbench(): React.ReactElement {
               left: 0,
               top: 0,
               bottom: 0,
-              width: 7,
+              width: 5,
               cursor: "col-resize",
               zIndex: 5,
               touchAction: "none",
               "&:hover": { background: "var(--omega-accent-soft)" },
+              "&:active": { background: "var(--omega-accent)" },
             }}
           />
         ) : null}

@@ -589,13 +589,13 @@ export function Composer(): React.ReactElement {
           gap: 1,
           p: 1.25,
           border: "1px solid var(--omega-border)",
-          borderRadius: "18px",
+          borderRadius: "16px",
           background: "var(--omega-composer-bg)",
-          boxShadow: "0 14px 34px var(--omega-shadow)",
-          transition: "border-color .18s ease, box-shadow .18s ease",
+          boxShadow: "0 8px 22px var(--omega-shadow)",
+          transition: "border-color .16s ease, box-shadow .16s ease",
           "&:focus-within": {
-            borderColor: "var(--omega-accent)",
-            boxShadow: "0 14px 34px var(--omega-shadow), 0 0 0 3px var(--omega-accent-soft)",
+            borderColor: "var(--omega-border-strong)",
+            boxShadow: "0 8px 22px var(--omega-shadow), 0 0 0 3px var(--omega-accent-soft)",
           },
         }}
       >
@@ -666,12 +666,12 @@ export function Composer(): React.ReactElement {
                 disabled={canSend}
                 sx={{
                   color: "#fff",
-                  background: "linear-gradient(135deg, #d9a514, #c47f0e)",
+                  background: "var(--omega-warning)",
                   borderRadius: "12px",
                   width: 42,
                   height: 42,
                   mb: 0.25,
-                  "&:hover": { filter: "brightness(1.12)" },
+                  "&:hover": { filter: "brightness(1.08)" },
                   "&:disabled": { opacity: 0.5, background: "var(--omega-border-strong)" },
                 }}
               >
@@ -688,7 +688,7 @@ export function Composer(): React.ReactElement {
                   width: 42,
                   height: 42,
                   mb: 0.25,
-                  "&:hover": { filter: "brightness(1.12)" },
+                  "&:hover": { filter: "brightness(1.08)" },
                 }}
               >
                 <StopIcon />
@@ -701,12 +701,12 @@ export function Composer(): React.ReactElement {
             disabled={canSend}
             sx={{
               color: "#fff",
-              background: "linear-gradient(135deg, var(--omega-accent-strong), #7666d9)",
+              background: "var(--omega-accent-strong)",
               borderRadius: "12px",
               width: 42,
               height: 42,
               mb: 0.25,
-              "&:hover": { filter: "brightness(1.12)" },
+              "&:hover": { filter: "brightness(1.08)" },
               "&:disabled": { opacity: 0.5, background: "var(--omega-border-strong)" },
             }}
           >
@@ -714,6 +714,18 @@ export function Composer(): React.ReactElement {
           </IconButton>
         )}
       </Box>
+      <Typography
+        className="mono-num"
+        sx={{
+          fontSize: 10,
+          color: "var(--omega-text-dim)",
+          textAlign: "center",
+          pt: 0.5,
+          userSelect: "none",
+        }}
+      >
+        Enter 发送 · Shift+Enter 换行 · ↑ 历史 · ! shell · Ctrl+K 命令 · F11 全屏
+      </Typography>
     </Box>
   );
 }

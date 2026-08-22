@@ -31,9 +31,7 @@ export function RightPanel(): React.ReactElement {
         width: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "var(--omega-panel-glass)",
-        border: "1px solid var(--omega-border)",
-        borderRadius: "18px",
+        background: "var(--omega-bg-rail)",
         overflow: "hidden",
       }}
     >

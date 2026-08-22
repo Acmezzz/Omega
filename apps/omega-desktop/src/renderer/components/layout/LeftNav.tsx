@@ -21,17 +21,15 @@ export function LeftNav(): React.ReactElement {
         width: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "var(--omega-panel-glass)",
-        border: "1px solid var(--omega-border)",
-        borderRadius: "18px",
+        background: "var(--omega-bg-rail)",
         overflow: "hidden",
       }}
     >
-      <Box sx={{ px: 1.5, pt: 1, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <Box sx={{ px: 1.5, pt: 1.25, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <Tabs
           value={leftTab}
           onChange={(_e, value) => setLayout({ leftTab: value })}
-          sx={{ minHeight: 32, "& .MuiTab-root": { minHeight: 32, minWidth: 64, fontSize: 12.5, px: 1.25 } }}
+          sx={{ minHeight: 34, "& .MuiTab-root": { minHeight: 34, minWidth: 64, fontSize: 12.5, px: 1.25 } }}
         >
           <Tab label="会话" value="sessions" />
           <Tab label="文件" value="files" />
@@ -51,7 +49,7 @@ export function LeftNav(): React.ReactElement {
         {leftTab === "sessions" ? <SessionList /> : <FileTree />}
       </Box>
       <Box sx={{ p: 1.25, pt: 1, borderTop: "1px solid var(--omega-border)" }}>
-        <Typography sx={{ fontSize: 11, color: "var(--omega-text-dim)" }}>JSONL 会话与扩展面板在右栏。输入 / 打开命令。</Typography>
+        <Typography sx={{ fontSize: 11, color: "var(--omega-text-dim)", lineHeight: 1.5 }}>JSONL 与扩展面板在右栏。</Typography>
       </Box>
       <NewSessionDialog open={newOpen} onClose={() => setNewOpen(false)} />
     </Box>

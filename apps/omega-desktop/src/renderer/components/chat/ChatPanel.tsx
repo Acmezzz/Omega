@@ -16,9 +16,9 @@ export function ChatPanel(): React.ReactElement {
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
-        background: "var(--omega-panel-glass)",
-        border: "1px solid var(--omega-border)",
-        borderRadius: "18px",
+        background: "var(--omega-bg-panel)",
+        borderLeft: "1px solid var(--omega-border)",
+        borderRight: "1px solid var(--omega-border)",
         overflow: "hidden",
         position: "relative",
       }}

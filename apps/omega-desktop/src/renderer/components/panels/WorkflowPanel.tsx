@@ -21,7 +21,7 @@ type SubTab = (typeof SUBTABS)[number];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <Paper sx={{ p: 1.5, mb: 1.5, background: "var(--omega-bg-soft)", border: "1px solid var(--omega-border)" }}>
+    <Paper sx={{ p: 1.5, mb: 1.5, background: "var(--omega-bg-panel)", border: "1px solid var(--omega-border)" }}>
       <Typography sx={{ fontSize: 12, fontWeight: 700, color: "var(--omega-text-muted)", mb: 1, letterSpacing: "0.04em" }}>
         {title}
       </Typography>

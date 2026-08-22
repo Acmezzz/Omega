@@ -10,7 +10,7 @@ import type { ScoutStatus, ScoutRounds, ScoutProposals } from "../../types/dto";
 
 function StatusCard({ data }: { data: ScoutStatus }) {
   return (
-    <Paper sx={{ p: 1.5, mb: 1.5, background: "var(--omega-bg-soft)", border: "1px solid var(--omega-border)" }}>
+    <Paper sx={{ p: 1.5, mb: 1.5, background: "var(--omega-bg-panel)", border: "1px solid var(--omega-border)" }}>
       <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", mb: 0.5 }}>
         <Chip size="small" label={data.enabled ? "启用" : "禁用"} color={data.enabled ? "success" : "default"} />
         <Chip size="small" label={`策略 ${data.policy}`} />
@@ -30,7 +30,7 @@ function StatusCard({ data }: { data: ScoutStatus }) {
 
 function RoundCard({ round }: { round: NonNullable<ScoutRounds["rounds"][number]> }) {
   return (
-    <Paper sx={{ p: 1.5, mb: 1, background: "var(--omega-bg-soft)", border: "1px solid var(--omega-border)" }}>
+    <Paper sx={{ p: 1.5, mb: 1, background: "var(--omega-bg-panel)", border: "1px solid var(--omega-border)" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         <Typography sx={{ fontSize: 13, fontWeight: 600, color: "var(--omega-text)" }}>{round.roundId}</Typography>
         <Chip size="small" label={round.trigger} />
