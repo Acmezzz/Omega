@@ -20,6 +20,7 @@ export function NewSessionDialog({ open, onClose }: NewSessionDialogProps): Reac
   const setSessions = useAppStore((s) => s.setSessions);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const loadTranscript = useAppStore((s) => s.loadTranscript);
+  const setAgent = useAppStore((s) => s.setAgent);
 
   React.useEffect(() => {
     if (!open) {
@@ -35,6 +36,8 @@ export function NewSessionDialog({ open, onClose }: NewSessionDialogProps): Reac
       const record = await unwrap(await ipc.newSession({ title: title || undefined, workspace: workspace || undefined }));
       setActiveSession(record.id);
       loadTranscript(record);
+      const state = await ipc.getState();
+      if (state.ok) setAgent(state.data);
       const list = await ipc.listSessions();
       if (list.ok) setSessions(list.data);
       onClose();
@@ -43,7 +46,7 @@ export function NewSessionDialog({ open, onClose }: NewSessionDialogProps): Reac
     } finally {
       setBusy(false);
     }
-  }, [title, workspace, setActiveSession, loadTranscript, setSessions, onClose]);
+  }, [title, workspace, setActiveSession, loadTranscript, setSessions, setAgent, onClose]);
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">

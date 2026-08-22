@@ -40,7 +40,7 @@ export function LeftNav(): React.ReactElement {
       </Box>
       <Stack spacing={1} sx={{ p: 1.5, pt: 1, borderTop: "1px solid #2b3444" }}>
         <Typography sx={{ fontSize: 11, color: "#697589" }}>
-          只读状态和工具事件显示在此。扩展面板在右栏。
+          会话来自 CLI JSONL。扩展面板在右栏。
         </Typography>
       </Stack>
       <NewSessionDialog open={newOpen} onClose={() => setNewOpen(false)} />

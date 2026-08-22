@@ -16,6 +16,12 @@ import type {
   ChangeApprovalResult,
   AgentPermissionState,
   AgentPlan,
+  AgentStateSnapshot,
+  ModelInfo,
+  ThinkingLevel,
+  SlashCommandInfo,
+  AuthStatus,
+  UsageSnapshot,
 } from "../types/dto";
 import type {
   ToolExecutionSummaryEvent,
@@ -36,6 +42,7 @@ export interface ToolCardState {
   status: "running" | "done" | "error";
   startedAt?: string;
   endedAt?: string;
+  afterMessageId?: string;
 }
 
 export interface LayoutState {
@@ -53,6 +60,16 @@ export interface AppState {
   messages: SessionMessage[];
   toolCards: ToolCardState[];
 
+  agent: AgentStateSnapshot | null;
+  models: ModelInfo[];
+  commands: SlashCommandInfo[];
+  auth: AuthStatus | null;
+  thinkingActive: boolean;
+  compacting: boolean;
+  retrying: boolean;
+  pendingCount: number;
+  composerError: string | null;
+
   extensionState: ExtensionStateBundle;
   extensionLoading: boolean;
   diff: WorkspaceDiff | null;
@@ -63,35 +80,50 @@ export interface AppState {
 
   layout: LayoutState;
 
-  // ----- connection / lifecycle -----
   setConnection: (state: ConnectionState) => void;
   setBootstrapError: (message: string | null) => void;
+  setComposerError: (message: string | null) => void;
 
-  // ----- sessions -----
   setSessions: (sessions: SessionSummary[]) => void;
   setActiveSession: (id: string | null) => void;
   loadTranscript: (record: SessionRecord) => void;
   clearConversation: () => void;
 
-  // ----- message stream -----
   appendMessage: (message: SessionMessage) => void;
   appendDelta: (messageId: string, delta: string) => void;
 
-  // ----- tool cards -----
   upsertToolCard: (summary: ToolExecutionSummaryEvent) => void;
 
-  // ----- extension state / diff / approval -----
+  setAgent: (agent: AgentStateSnapshot | null) => void;
+  patchAgent: (patch: Partial<AgentStateSnapshot>) => void;
+  setModels: (models: ModelInfo[]) => void;
+  setCommands: (commands: SlashCommandInfo[]) => void;
+  setAuth: (auth: AuthStatus | null) => void;
+  setThinkingActive: (active: boolean) => void;
+  setCompacting: (compacting: boolean) => void;
+  setRetrying: (retrying: boolean) => void;
+  setPendingCount: (pendingCount: number) => void;
+
   setExtensionState: (bundle: ExtensionStateBundle) => void;
   setExtensionLoading: (loading: boolean) => void;
   setDiff: (diff: WorkspaceDiff | null) => void;
   setApproval: (result: ChangeApprovalResult | null) => void;
 
-  // ----- layout -----
   setLayout: (patch: Partial<LayoutState>) => void;
   toggleRightPanel: () => void;
   setRightTab: (tab: LayoutState["rightTab"]) => void;
   setCommandPaletteOpen: (open: boolean) => void;
 }
+
+const EMPTY_USAGE: UsageSnapshot = {
+  tokens: null,
+  contextWindow: null,
+  percent: null,
+  input: 0,
+  output: 0,
+  total: 0,
+  cost: 0,
+};
 
 export const useAppStore = create<AppState>((set) => ({
   connection: "connecting",
@@ -101,6 +133,16 @@ export const useAppStore = create<AppState>((set) => ({
   activeSessionId: null,
   messages: [],
   toolCards: [],
+
+  agent: null,
+  models: [],
+  commands: [],
+  auth: null,
+  thinkingActive: false,
+  compacting: false,
+  retrying: false,
+  pendingCount: 0,
+  composerError: null,
 
   extensionState: {},
   extensionLoading: false,
@@ -118,6 +160,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   setConnection: (connection) => set({ connection }),
   setBootstrapError: (bootstrapError) => set({ bootstrapError }),
+  setComposerError: (composerError) => set({ composerError }),
 
   setSessions: (sessions) => set({ sessions }),
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
@@ -128,11 +171,25 @@ export const useAppStore = create<AppState>((set) => ({
       toolCards: (record.toolCards ?? []).map((card) => ({
         toolCallId: card.toolCallId,
         toolName: card.toolName,
-        kind: "other",
+        kind: (card.kind as ToolCardState["kind"]) ?? "other",
+        target: card.target,
         status: card.status === "error" ? "error" : "done",
+        afterMessageId: card.afterMessageId,
       })),
+      thinkingActive: false,
+      compacting: false,
+      retrying: false,
+      composerError: null,
     }),
-  clearConversation: () => set({ messages: [], toolCards: [] }),
+  clearConversation: () =>
+    set({
+      messages: [],
+      toolCards: [],
+      thinkingActive: false,
+      compacting: false,
+      retrying: false,
+      composerError: null,
+    }),
 
   appendMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
@@ -147,9 +204,8 @@ export const useAppStore = create<AppState>((set) => ({
 
   upsertToolCard: (summary) =>
     set((state) => {
-      const existing = state.toolCards.find(
-        (card) => card.toolCallId === summary.toolCallId,
-      );
+      const lastAssistant = [...state.messages].reverse().find((message) => message.role === "assistant");
+      const existing = state.toolCards.find((card) => card.toolCallId === summary.toolCallId);
       if (existing) {
         return {
           toolCards: state.toolCards.map((card) =>
@@ -163,6 +219,7 @@ export const useAppStore = create<AppState>((set) => ({
                   status: summary.status,
                   startedAt: card.startedAt ?? summary.startedAt,
                   endedAt: summary.endedAt ?? card.endedAt,
+                  afterMessageId: card.afterMessageId ?? lastAssistant?.id,
                 }
               : card,
           ),
@@ -180,10 +237,26 @@ export const useAppStore = create<AppState>((set) => ({
             status: summary.status,
             startedAt: summary.startedAt,
             endedAt: summary.endedAt,
+            afterMessageId: lastAssistant?.id,
           },
         ],
       };
     }),
+
+  setAgent: (agent) => set({ agent, compacting: agent?.isCompacting ?? false }),
+  patchAgent: (patch) =>
+    set((state) => ({
+      agent: state.agent
+        ? { ...state.agent, ...patch, usage: patch.usage ?? state.agent.usage ?? EMPTY_USAGE }
+        : (patch as AgentStateSnapshot),
+    })),
+  setModels: (models) => set({ models }),
+  setCommands: (commands) => set({ commands }),
+  setAuth: (auth) => set({ auth }),
+  setThinkingActive: (thinkingActive) => set({ thinkingActive }),
+  setCompacting: (compacting) => set({ compacting }),
+  setRetrying: (retrying) => set({ retrying }),
+  setPendingCount: (pendingCount) => set({ pendingCount }),
 
   setExtensionState: (extensionState) => set({ extensionState }),
   setExtensionLoading: (extensionLoading) => set({ extensionLoading }),
@@ -277,3 +350,5 @@ export function applyToolEnd(
     endedAt: new Date().toISOString(),
   });
 }
+
+export type { ThinkingLevel };

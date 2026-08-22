@@ -14,7 +14,7 @@ import * as React from "react";
 import { createTheme, ThemeProvider as MuiThemeProvider, CssBaseline } from "@mui/material";
 import { CacheProvider } from "@emotion/react";
 import { emotionCache } from "./emotion-cache";
-import { colors, fontFamily } from "./tokens";
+import { colors, fontFamily, monoFamily } from "./tokens";
 
 const theme = createTheme({
   palette: {
@@ -39,8 +39,69 @@ const theme = createTheme({
         root: { backgroundImage: "none", backgroundColor: colors.bgPanel },
       },
     },
+    MuiButton: {
+      defaultProps: { disableElevation: true },
+      styleOverrides: {
+        root: { textTransform: "none", fontWeight: 600 },
+      },
+    },
+    MuiChip: {
+      styleOverrides: {
+        root: { fontWeight: 500, letterSpacing: "0.01em" },
+        sizeSmall: { height: 24 },
+      },
+    },
+    MuiTooltip: {
+      styleOverrides: {
+        tooltip: {
+          backgroundColor: colors.bgElevated,
+          border: `1px solid ${colors.border}`,
+          fontSize: 12,
+          padding: "5px 9px",
+        },
+        arrow: { color: colors.bgElevated },
+      },
+    },
+    MuiMenu: {
+      styleOverrides: {
+        paper: {
+          border: `1px solid ${colors.border}`,
+          boxShadow: "0 18px 44px rgba(0,0,0,0.45)",
+          maxHeight: 380,
+        },
+        list: { py: 0.75 },
+      },
+    },
+    MuiMenuItem: {
+      styleOverrides: {
+        root: {
+          fontSize: 13,
+          borderRadius: 8,
+          mx: 0.75,
+          "&.Mui-selected": { background: "rgba(93,134,242,0.18)" },
+        },
+      },
+    },
+    MuiDialog: {
+      styleOverrides: {
+        paper: { border: `1px solid ${colors.border}`, boxShadow: "0 24px 64px rgba(0,0,0,0.5)" },
+      },
+    },
+    MuiLinearProgress: {
+      styleOverrides: {
+        bar: { borderRadius: 999 },
+      },
+    },
+    MuiAccordion: {
+      styleOverrides: { root: { fontFamily } },
+    },
+    MuiInputBase: {
+      styleOverrides: { input: { fontFamily } },
+    },
   },
 });
+
+export { monoFamily };
 
 export function ThemeProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   return (

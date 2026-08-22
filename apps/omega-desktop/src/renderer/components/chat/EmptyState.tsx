@@ -62,6 +62,12 @@ export function EmptyState(): React.ReactElement {
         <Typography sx={{ maxWidth: 500, mx: "auto", color: "#8d99ad" }}>
           描述一个问题、目标或需要探索的方向，Agent 会在当前工作区中协助你。
         </Typography>
+        <Typography sx={{ mt: 1.5, fontSize: 12, color: "#5c6a82" }}>
+          <kbd style={{ fontFamily: "inherit", background: "#1d2330", border: "1px solid #2b3444", borderRadius: 6, padding: "1px 6px" }}>Ctrl+K</kbd>
+          {" "}命令面板 ·{" "}
+          <kbd style={{ fontFamily: "inherit", background: "#1d2330", border: "1px solid #2b3444", borderRadius: 6, padding: "1px 6px" }}>Ctrl+Shift+N</kbd>
+          {" "}新建会话 · 生成中可发送转向指令或停止
+        </Typography>
         <Box sx={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 1, mt: 2.5 }}>
           {SUGGESTIONS.map((s) => (
             <Button

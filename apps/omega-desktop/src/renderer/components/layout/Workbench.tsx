@@ -1,6 +1,7 @@
 import * as React from "react";
 import Box from "@mui/material/Box";
 import { useAppStore } from "../../store/useAppStore";
+import { TitleBar } from "./TitleBar";
 import { Header } from "./Header";
 import { LeftNav } from "./LeftNav";
 import { ChatPanel } from "../chat/ChatPanel";
@@ -8,8 +9,7 @@ import { RightPanel } from "./RightPanel";
 
 /**
  * Three-column workbench (Codex-style):
- *   [ LeftNav (fixed) | ChatPanel (flex) | RightPanel (collapsible) ]
- * Header spans the full width on top.
+ *   [ TitleBar+Header (top) | LeftNav (fixed) | ChatPanel (flex) | RightPanel (collapsible) ]
  */
 export function Workbench(): React.ReactElement {
   const rightOpen = useAppStore((s) => s.layout.rightPanelOpen);
@@ -17,14 +17,16 @@ export function Workbench(): React.ReactElement {
     <Box
       sx={{
         display: "grid",
-        gridTemplateRows: "auto 1fr",
+        gridTemplateRows: "auto auto 1fr",
         gridTemplateColumns: rightOpen ? "248px minmax(0,1fr) 440px" : "248px minmax(0,1fr)",
         height: "100vh",
         gap: 1,
         p: 1,
+        pt: 0,
         transition: "grid-template-columns 0.2s ease",
       }}
     >
+      <TitleBar />
       <Box sx={{ gridColumn: "1 / -1" }}>
         <Header />
       </Box>

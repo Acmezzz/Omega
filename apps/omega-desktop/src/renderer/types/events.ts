@@ -57,6 +57,36 @@ export interface ErrorEvent {
   message?: string;
 }
 
+export interface CompactionEvent {
+  type: "compaction_start" | "compaction_end";
+  status: "start" | "done" | "aborted" | "error";
+}
+
+export interface ThinkingLevelChangedEvent {
+  type: "thinking_level_changed";
+  level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+export interface ThinkingStatusEvent {
+  type: "thinking_status";
+  active: boolean;
+}
+
+export interface QueueUpdateEvent {
+  type: "queue_update";
+  pendingCount: number;
+}
+
+export interface SessionInfoChangedEvent {
+  type: "session_info_changed";
+  name?: string;
+}
+
+export interface AutoRetryEvent {
+  type: "auto_retry_start" | "auto_retry_end";
+  status: "start" | "done" | "error";
+}
+
 /**
  * Safe, read-only summary of a tool call. Crucially `target` is ONLY the file
  * basename — the main process strips the full path and never forwards raw tool
@@ -65,8 +95,8 @@ export interface ErrorEvent {
 export interface ToolExecutionSummaryEvent {
   type: "tool_execution_summary";
   toolCallId: string;
-  toolName: "read" | "edit" | "write" | "bash" | string;
-  kind: "read" | "edit" | "write" | "bash" | "other";
+  toolName: "read" | "edit" | "write" | "bash" | "grep" | "find" | "ls" | string;
+  kind: "read" | "edit" | "write" | "bash" | "search" | "other";
   target?: string;
   op?: string;
   status: "running" | "done" | "error";
@@ -82,7 +112,13 @@ export type SafeEvent =
   | ToolExecutionEndEvent
   | LifecycleEvent
   | ErrorEvent
-  | ToolExecutionSummaryEvent;
+  | ToolExecutionSummaryEvent
+  | CompactionEvent
+  | ThinkingLevelChangedEvent
+  | ThinkingStatusEvent
+  | QueueUpdateEvent
+  | SessionInfoChangedEvent
+  | AutoRetryEvent;
 
 export interface BootstrapError {
   message: string;

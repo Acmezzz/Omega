@@ -10,6 +10,40 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const MAX_PROMPT_CHARS = 40_000;
 const MAX_FIELD_CHARS = 256_000;
+const MAX_PROMPT_IMAGES = 4;
+const MAX_IMAGE_CHARS = 8_000_000;
+
+function validImage(image) {
+  return (
+    image !== null &&
+    typeof image === "object" &&
+    typeof image.mimeType === "string" &&
+    image.mimeType.startsWith("image/") &&
+    typeof image.data === "string" &&
+    image.data.length > 0 &&
+    image.data.length <= MAX_IMAGE_CHARS
+  );
+}
+
+// ----- custom window controls (frameless TitleBar) -----
+const windowApi = {
+  minimize: () => ipcRenderer.invoke("window:minimize"),
+  toggleMaximize: () => ipcRenderer.invoke("window:toggleMaximize"),
+  closeWindow: () => ipcRenderer.invoke("window:close"),
+  isMaximized: () => ipcRenderer.invoke("window:isMaximized"),
+  onWindowStateChanged: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    const handler = (_event, data) => {
+      try {
+        callback(data);
+      } catch (error) {
+        console.error("omega window state callback failed", error);
+      }
+    };
+    ipcRenderer.on("window:maximizedChanged", handler);
+    return () => ipcRenderer.removeListener("window:maximizedChanged", handler);
+  },
+};
 
 function safeString(value, max) {
   return typeof value === "string" ? value.slice(0, max) : undefined;
@@ -20,12 +54,22 @@ function isPlainObject(value) {
 }
 
 contextBridge.exposeInMainWorld("omega", {
+  ...windowApi,
   // ----- legacy contract (unchanged) -----
-  prompt: (text) => {
+  prompt: (text, behavior, images) => {
     if (typeof text !== "string" || !text.trim()) return Promise.resolve({ ok: false, code: "invalid_prompt", message: "Prompt must be a non-empty string" });
     if (text.length > MAX_PROMPT_CHARS) return Promise.resolve({ ok: false, code: "prompt_too_large", message: `Prompt exceeds ${MAX_PROMPT_CHARS} characters` });
-    return ipcRenderer.invoke("agent:prompt", text);
+    if (behavior !== undefined && behavior !== "steer" && behavior !== "followUp") {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "behavior must be steer|followUp" });
+    }
+    if (images !== undefined) {
+      if (!Array.isArray(images) || images.length === 0 || images.length > MAX_PROMPT_IMAGES || !images.every(validImage)) {
+        return Promise.resolve({ ok: false, code: "invalid_args", message: `images must be 1-${MAX_PROMPT_IMAGES} {mimeType,data} entries` });
+      }
+    }
+    return ipcRenderer.invoke("agent:prompt", text, behavior, images);
   },
+  abort: () => ipcRenderer.invoke("agent:abort"),
   onStatus: (callback) => {
     if (typeof callback !== "function") return () => {};
     const handler = (_event, data) => {
@@ -45,6 +89,60 @@ contextBridge.exposeInMainWorld("omega", {
 
   // ----- extension state (read-only) -----
   sessionReady: () => ipcRenderer.invoke("omega:sessionReady"),
+  getState: () => ipcRenderer.invoke("omega:getState"),
+  listModels: () => ipcRenderer.invoke("omega:listModels"),
+  setModel: (req) => {
+    if (!req || typeof req.provider !== "string" || typeof req.modelId !== "string") {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "provider and modelId are required" });
+    }
+    return ipcRenderer.invoke("omega:setModel", {
+      provider: req.provider.slice(0, 256),
+      modelId: req.modelId.slice(0, 256),
+    });
+  },
+  setThinkingLevel: (req) => {
+    const allowed = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    if (!req || typeof req.level !== "string" || !allowed.includes(req.level)) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "level must be a supported thinking level" });
+    }
+    return ipcRenderer.invoke("omega:setThinkingLevel", { level: req.level });
+  },
+  listCommands: () => ipcRenderer.invoke("omega:listCommands"),
+  compact: () => ipcRenderer.invoke("omega:compact"),
+  authStatus: () => ipcRenderer.invoke("omega:authStatus"),
+  listPiSessions: () => ipcRenderer.invoke("omega:listPiSessions"),
+  newPiSession: (req) => {
+    if (req && req.title !== undefined && (typeof req.title !== "string" || req.title.length > 256)) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "title must be a short string" });
+    }
+    if (req && req.workspace !== undefined && typeof req.workspace !== "string") {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "workspace must be a string" });
+    }
+    return ipcRenderer.invoke("omega:newPiSession", {
+      title: safeString(req?.title, 256),
+      workspace: safeString(req?.workspace, 4096),
+    });
+  },
+  switchPiSession: (req) => {
+    if (!req || typeof req.sessionId !== "string" || !req.sessionId.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "sessionId is required" });
+    }
+    return ipcRenderer.invoke("omega:switchPiSession", { sessionId: req.sessionId });
+  },
+  setSessionName: (req) => {
+    if (!req || typeof req.name !== "string" || !req.name.trim()) {
+      return Promise.resolve({ ok: false, code: "invalid_args", message: "name must be a non-empty string" });
+    }
+    return ipcRenderer.invoke("omega:setSessionName", { name: req.name.slice(0, 256) });
+  },
+  updateSettings: (req) => {
+    const payload = {};
+    if (req?.steeringMode === "all" || req?.steeringMode === "one-at-a-time") payload.steeringMode = req.steeringMode;
+    if (req?.followUpMode === "all" || req?.followUpMode === "one-at-a-time") payload.followUpMode = req.followUpMode;
+    if (typeof req?.autoCompaction === "boolean") payload.autoCompaction = req.autoCompaction;
+    if (typeof req?.autoRetry === "boolean") payload.autoRetry = req.autoRetry;
+    return ipcRenderer.invoke("omega:updateSettings", payload);
+  },
   queryExtensionState: (req) => {
     const scope = typeof req?.scope === "string" ? req.scope : "all";
     if (!["all", "workflow", "scout"].includes(scope)) {

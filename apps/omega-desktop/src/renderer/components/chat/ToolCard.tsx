@@ -19,6 +19,7 @@ const KIND_LABEL: Record<string, string> = {
   edit: "编辑",
   write: "写入",
   bash: "执行",
+  search: "搜索",
   other: "工具",
 };
 

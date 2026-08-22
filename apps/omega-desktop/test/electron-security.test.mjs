@@ -13,7 +13,7 @@ test("main configures Electron isolation and navigation boundaries", async () =>
   assert.match(source, /setWindowOpenHandler/);
   assert.match(source, /will-navigate/);
   assert.match(source, /senderAllowed/);
-  assert.match(source, /session\?\.dispose/);
+  assert.match(source, /runtime\?\.dispose/);
 });
 
 test("bridge filters raw agent events and does not forward sensitive payloads", async () => {
@@ -82,6 +82,18 @@ test("new IPC handlers stay behind senderAllowed and return an IpcResult envelop
     "omega:deleteSession",
     "omega:diffWorkspace",
     "omega:approveChange",
+    "omega:getState",
+    "omega:listModels",
+    "omega:setModel",
+    "omega:setThinkingLevel",
+    "omega:listCommands",
+    "omega:listPiSessions",
+    "omega:newPiSession",
+    "omega:switchPiSession",
+    "omega:compact",
+    "omega:authStatus",
+    "omega:setSessionName",
+    "agent:abort",
   ]) {
     assert.match(source, new RegExp(`ipcMain\\.handle\\("${channel}"`), `${channel} handler present`);
     // The handler's 2nd argument is the event. Allow an optional `async` modifier
@@ -108,9 +120,22 @@ test("preload exposes a narrow validated bridge including omega:* methods", asyn
     "deleteSession",
     "diffWorkspace",
     "approveChange",
+    "getState",
+    "listModels",
+    "setModel",
+    "setThinkingLevel",
+    "listCommands",
+    "listPiSessions",
+    "newPiSession",
+    "switchPiSession",
+    "compact",
+    "authStatus",
+    "setSessionName",
+    "updateSettings",
   ]) {
     assert.match(source, new RegExp(`ipcRenderer\\.invoke\\("omega:${method}"`), `${method} invoke present`);
   }
+  assert.match(source, /ipcRenderer\.invoke\("agent:abort"\)/);
   // Untrusted inputs are validated before invoking.
   assert.match(source, /invalid_args/);
 });
@@ -128,4 +153,44 @@ test("index.html CSP carries the style nonce but no unsafe-inline / unsafe-eval"
   assert.doesNotMatch(cspContent, /unsafe-inline/);
   assert.doesNotMatch(cspContent, /unsafe-eval/);
   assert.match(html, /\.\/dist\/assets\/index\.js/);
+});
+
+test("custom window controls are guarded IPC behind senderAllowed", async () => {
+  const main = await read("../electron/main.js");
+  for (const channel of ["window:minimize", "window:toggleMaximize", "window:close", "window:isMaximized"]) {
+    assert.match(main, new RegExp(`ipcMain\\.handle\\("${channel}",\\s*\\(event`), `${channel} handler present`);
+  }
+  const preload = await read("../electron/preload.js");
+  for (const channel of ["window:minimize", "window:toggleMaximize", "window:close", "window:isMaximized"]) {
+    assert.match(preload, new RegExp(`ipcRenderer\\.invoke\\("${channel}"`), `${channel} invoke present`);
+  }
+  assert.match(preload, /onWindowStateChanged/);
+});
+
+test("deleteSession only removes files inside the pi sessions root", async () => {
+  const main = await read("../electron/main.js");
+  assert.match(main, /piSessionsRoot/);
+  assert.match(main, /Refusing to delete a file outside the pi sessions directory/);
+  assert.match(main, /forgetSessionPath/);
+});
+
+test("prompt images are validated in both preload and main", async () => {
+  const main = await read("../electron/main.js");
+  assert.match(main, /MAX_PROMPT_IMAGES/);
+  assert.match(main, /normalizePromptImages/);
+  const preload = await read("../electron/preload.js");
+  assert.match(preload, /MAX_PROMPT_IMAGES/);
+  assert.match(preload, /validImage/);
+});
+
+test("main notifies on completion only when the window is unfocused", async () => {
+  const main = await read("../electron/main.js");
+  assert.match(main, /Notification\.isSupported/);
+  assert.match(main, /win\.isFocused\(\)/);
+});
+
+test("first prompt auto-titles an unnamed session", async () => {
+  const main = await read("../electron/main.js");
+  assert.match(main, /setSessionName/);
+  assert.match(main, /session\.sessionName/);
 });

@@ -18,7 +18,7 @@
 | 状态管理 | **Zustand**（轻量、避免高频 delta 重渲染风暴），单 store |
 | 扩展 Web 化数据源 | 只读读取 `.pi/extensions` 的 **append-only 状态文件**（catalog/registry/tracker/coverage/rounds.jl + 派生 health/stats），由新增主进程模块 `state-reader.js` 派生为受控 DTO |
 | diff + 审批 | **(a) post-hoc 只读 git diff** 为 V1 主方案：预览=`git diff` 结构化 DTO；审批 reject=主进程 `git checkout -- <file>`（仅 git 管理文件），accept=保留。主进程特权执行，渲染进程无写权限 |
-| 会话持久化 | **V1 本地 JSON 文件存储**（零原生依赖，置于 `userData/omega/sessions/`），多会话多项目；与 agent 会话生命周期绑定采用「单活动会话 + 切换」简化模型 |
+| 会话持久化 | **V1 本地 JSON 文件存储**（零原生依赖，置于 `userData/omega/sessions/`），多会话多项目；与 agent 会话生命周期绑定采用「单活动会话 + 切换」简化模型。**V2 权威源改为 CLI JSONL**（`SessionManager` / `~/.pi/agent/sessions`），JSON 仅作缓存 |
 
 ---
 
@@ -561,3 +561,50 @@ graph TD
 ## 附录 B · 时序图（mermaid）
 
 见 [`sequence-diagram.mermaid`](./sequence-diagram.mermaid)（含：启动→对话事件流→扩展状态查询→diff 预览→审批→会话持久化）。
+
+---
+
+## 7. V2 控制面（桌面 Agent 工作台）
+
+V1 把桌面做成了 Codex 风格三栏壳，但控制面绕开了 CLI：`createAgentSession()`、自定义 JSON 会话、只有 `prompt`。V2 复用 SDK Runtime，不把 TUI 搬进 Electron，也不放松安全红线。
+
+### 7.1 复用的 CLI API
+
+- `createAgentSessionRuntime` + `createAgentSessionServices` / `createAgentSessionFromServices`
+- `AgentSession.prompt` / `abort` / `setModel` / `setThinkingLevel` / `compact` / `getSessionStats`
+- `SessionManager.list` / `listAll` / `open` / `continueRecent` / `newSession` / `switchSession`
+- 斜杠命令：builtin 桌面动作（compact/new）+ `extensionRunner.getRegisteredCommands()` + prompts + skills
+- 主进程仍内嵌 SDK，不 spawn CLI，不走 stdin RPC
+
+### 7.2 新增 IPC（全部 `IpcResult` + `senderAllowed`）
+
+| 通道 | 返回 | 说明 |
+|---|---|---|
+| `agent:abort` | `IpcResult<void>` | 停止当前生成 |
+| `omega:getState` | `AgentStateSnapshot` | 模型 / thinking / usage / 净化 transcript |
+| `omega:listModels` / `omega:setModel` | 模型列表 / 切换后 snapshot | 含 `local-qwen/qwen3.8-local` |
+| `omega:setThinkingLevel` | snapshot | 档位由当前模型能力钳制 |
+| `omega:listCommands` | `SlashCommandInfo[]` | 动态发现，不再写死 9 条 |
+| `omega:listPiSessions` / `omega:newPiSession` / `omega:switchPiSession` | JSONL 会话 | 真正继续 CLI 上下文 |
+| `omega:compact` | snapshot | 手动压缩 |
+| `omega:authStatus` | provider 配置摘要 | 读 `auth.json` + `models.json`；本地 dummy key 显示「本地可用」 |
+
+`omega:listSessions` / `newSession` / `loadSession` 现在代理到 JSONL；`userData/omega/sessions` JSON 仅作回退缓存。
+
+### 7.3 净化事件扩展
+
+仍只发结构化摘要，不发原文：
+
+- `compaction_start` / `compaction_end` → `{type, status}`
+- `thinking_status` → `{active}`（从 `thinking_*` 派生，无思考文本）
+- `thinking_level_changed` → `{level}`
+- `queue_update` → `{pendingCount}`
+- `session_info_changed` → `{name}`
+- `auto_retry_start` / `auto_retry_end` → `{status}`
+- `tool_execution_summary.target` 仍是 basename
+
+### 7.4 UI
+
+Header：模型 chip、thinking chip、Stop、token/上下文条、压缩中、登录/本地可用。Composer 运行中显示 Stop；失败恢复文本。CommandPalette 从 `listCommands()` 填充。LeftNav 按 workspace 分组 JSONL 会话。Chat 工具卡插在对应 assistant 消息之后。
+
+安全红线不变：渲染器仍不得收到 thinking 原文、完整路径、工具参数/结果、backup fragment。

@@ -8,50 +8,59 @@ import ListItemText from "@mui/material/ListItemText";
 import Box from "@mui/material/Box";
 import { useAppStore } from "../../store/useAppStore";
 import { ipc } from "../../ipc/client";
+import type { SlashCommandInfo } from "../../types/dto";
 
-interface Command {
-  id: string;
-  label: string;
-  hint: string;
+function commandLabel(command: SlashCommandInfo): string {
+  return command.name.startsWith("/") ? command.name : `/${command.name}`;
 }
-
-const COMMANDS: Command[] = [
-  { id: "/wf-extract", label: "/wf-extract", hint: "重新提炼工作流并演进目录" },
-  { id: "/wf-list", label: "/wf-list", hint: "查看 registry / 状态 / 统计" },
-  { id: "/wf-catalog", label: "/wf-catalog", hint: "查看功能类别目录" },
-  { id: "/wf-stats", label: "/wf-stats", hint: "查看项目任务与回合统计" },
-  { id: "/wf-health", label: "/wf-health", hint: "只读健康检查" },
-  { id: "/journal-restore", label: "/journal-restore", hint: "从备份恢复未落盘事实回合（dry-run）" },
-  { id: "/exploration-scout on", label: "/exploration-scout on", hint: "开启 Scout 探索模式" },
-  { id: "/exploration-scout off", label: "/exploration-scout off", hint: "关闭 Scout 探索模式" },
-  { id: "/exploration-scout status", label: "/exploration-scout status", hint: "查看 Scout 状态" },
-];
 
 export function CommandPalette(): React.ReactElement {
   const open = useAppStore((s) => s.layout.commandPaletteOpen);
   const setOpen = useAppStore((s) => s.setCommandPaletteOpen);
   const setConnection = useAppStore((s) => s.setConnection);
+  const setAgent = useAppStore((s) => s.setAgent);
+  const commands = useAppStore((s) => s.commands);
   const [query, setQuery] = React.useState("");
 
   React.useEffect(() => {
-    if (open) setQuery("");
+    if (!open) return;
+    setQuery("");
+    void ipc.listCommands().then((res) => {
+      if (res.ok) useAppStore.getState().setCommands(res.data);
+    });
   }, [open]);
 
-  const filtered = COMMANDS.filter(
-    (c) => c.label.includes(query) || c.hint.includes(query),
-  );
+  const filtered = commands.filter((command) => {
+    const hay = `${commandLabel(command)} ${command.description} ${command.source}`;
+    return hay.toLowerCase().includes(query.toLowerCase());
+  });
 
   const run = React.useCallback(
-    async (command: string) => {
+    async (command: SlashCommandInfo) => {
       setOpen(false);
+      if (command.action === "compact") {
+        const res = await ipc.compact();
+        if (res.ok) setAgent(res.data);
+        return;
+      }
+      if (command.action === "new") {
+        const record = await ipc.newSession({});
+        if (record.ok) {
+          useAppStore.getState().setActiveSession(record.data.id);
+          useAppStore.getState().loadTranscript(record.data);
+          const list = await ipc.listSessions();
+          if (list.ok) useAppStore.getState().setSessions(list.data);
+        }
+        return;
+      }
       setConnection("running");
       try {
-        await ipc.prompt(command);
+        await ipc.prompt(commandLabel(command));
       } catch (error) {
         console.error("command failed", error);
       }
     },
-    [setOpen, setConnection],
+    [setOpen, setConnection, setAgent],
   );
 
   return (
@@ -66,16 +75,16 @@ export function CommandPalette(): React.ReactElement {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && filtered[0]) void run(filtered[0].id);
+            if (e.key === "Enter" && filtered[0]) void run(filtered[0]);
           }}
         />
       </Box>
       <List sx={{ px: 2, pb: 2, pt: 0 }}>
-        {filtered.map((c) => (
-          <ListItemButton key={c.id} onClick={() => void run(c.id)} sx={{ borderRadius: "10px", mb: 0.5 }}>
+        {filtered.map((command) => (
+          <ListItemButton key={`${command.source}:${command.name}`} onClick={() => void run(command)} sx={{ borderRadius: "10px", mb: 0.5 }}>
             <ListItemText
-              primary={<span style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, color: "#86a9ff" }}>{c.label}</span>}
-              secondary={<span style={{ fontSize: 12, color: "#8d99ad" }}>{c.hint}</span>}
+              primary={<span style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, color: "#86a9ff" }}>{commandLabel(command)}</span>}
+              secondary={<span style={{ fontSize: 12, color: "#8d99ad" }}>{command.description || command.source}</span>}
             />
           </ListItemButton>
         ))}

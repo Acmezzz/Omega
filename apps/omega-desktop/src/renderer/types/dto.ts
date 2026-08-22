@@ -266,6 +266,7 @@ export interface SessionSummary {
   createdAt: string;
   updatedAt: string;
   status: "active" | "archived";
+  messageCount?: number;
 }
 
 export interface SessionMessage {
@@ -279,11 +280,82 @@ export interface ToolCardSummary {
   toolCallId: string;
   toolName: string;
   status: string;
+  kind?: string;
+  target?: string;
+  afterMessageId?: string;
 }
 
 export interface SessionRecord extends SessionSummary {
   messages: SessionMessage[];
   toolCards?: ToolCardSummary[];
+}
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ModelInfo {
+  provider: string;
+  id: string;
+  name: string;
+  contextWindow: number;
+  reasoning: boolean;
+  selected?: boolean;
+}
+
+export interface UsageSnapshot {
+  tokens: number | null;
+  contextWindow: number | null;
+  percent: number | null;
+  input: number;
+  output: number;
+  total: number;
+  cost: number;
+}
+
+export interface PromptImage {
+  mimeType: string;
+  data: string;
+}
+
+export interface AgentStateSnapshot {
+  ready: boolean;
+  cwd: string;
+  sessionId: string;
+  sessionName: string | null;
+  model: Omit<ModelInfo, "selected"> | null;
+  thinkingLevel: ThinkingLevel;
+  thinkingLevels: ThinkingLevel[];
+  supportsThinking: boolean;
+  isStreaming: boolean;
+  isIdle: boolean;
+  isCompacting: boolean;
+  usage: UsageSnapshot;
+  steeringMode: "all" | "one-at-a-time";
+  followUpMode: "all" | "one-at-a-time";
+  autoCompaction: boolean;
+  autoRetry: boolean;
+  modelFallbackMessage: string | null;
+  messages?: SessionMessage[];
+  toolCards?: ToolCardSummary[];
+}
+
+export interface SlashCommandInfo {
+  name: string;
+  description: string;
+  source: "builtin" | "extension" | "prompt" | "skill";
+  action: "prompt" | "compact" | "new";
+}
+
+export interface AuthProviderStatus {
+  id: string;
+  name: string;
+  configured: boolean;
+  source: string | null;
+}
+
+export interface AuthStatus {
+  providers: AuthProviderStatus[];
+  label: string;
+  ready: boolean;
 }
 
 // ===== extension state aggregation (single pull) =====
